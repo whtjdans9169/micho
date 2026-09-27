@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>whtjdans9169</title>
+  <style>
+    :root {
+      --bg: #faf8f5;
+      --card: #ffffff;
+      --text: #1f1d1a;
+      --muted: #6b665f;
+      --accent: #d97757;
+      --border: #e8e3dc;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1917;
+        --card: #242220;
+        --text: #f2efea;
+        --muted: #a39e96;
+        --border: #36332f;
+      }
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px 16px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      width: 100%;
+      max-width: 520px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 40px 32px;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 13px;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      padding: 2px 12px;
+      margin-bottom: 20px;
+    }
+    h1 { font-size: 32px; margin-bottom: 12px; }
+    p { color: var(--muted); }
+    ul { list-style: none; padding: 0; margin: 28px 0; }
+    li {
+      padding: 12px 0;
+      border-top: 1px solid var(--border);
+    }
+    li:last-child { border-bottom: 1px solid var(--border); }
+    li span { color: var(--accent); margin-right: 8px; }
+    a {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      padding: 10px 20px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    a:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="badge">첫 번째 웹페이지</div>
+    <h1>안녕하세요 👋</h1>
+    <p>VS Code와 Claude Code로 만든 제 첫 페이지예요. GitHub에 올리고 Vercel로 배포했어요.</p>
+    <ul>
+      <li><span>✓</span>VS Code 세팅</li>
+      <li><span>✓</span>Git · GitHub 연결</li>
+      <li><span>✓</span>Vercel 배포</li>
+    </ul>
+    <a href="https://github.com/whtjdans9169">GitHub 보러가기</a>
+  </main>
+</body>
+</html>
