@@ -20,8 +20,8 @@ const TITLE = '정림24 건축사 스터디앱'; // 브라우저 탭 이름
 // 모두가 함께 쓰는 설정 (board/settings). 통계 · 시험일 화면에서 누구나 바꿀 수 있다
 const DEFAULT_SETTINGS = {
   examDate: '2027-03-13', // 시험일 (토)
-  fine: 1000,             // 할 일을 안 적었거나 다 못 끝낸 날의 벌금
-  fineStart: '2026-09-28', // 벌금 계산 시작일
+  fine: 2000,             // 할 일을 안 적었거나 · 다 못 끝냈거나 · 인증샷이 없는 날의 벌금
+  fineStart: '2026-10-10', // 벌금 계산 시작일
 };
 const FEED_PAGE = 24; // 홈 인증샷을 한 번에 불러오는 개수
 const DEFAULT_COLORS = ['#D97471', '#8E7CC3', '#EBC04A'];
@@ -239,8 +239,13 @@ function hydrateProofs() {
 // ---------- 벌금 (모두의 할 일 기록으로 계산) ----------
 async function loadFines() {
   try {
-    const [p, snap] = await Promise.all([loadProfiles(), fb.f.getDocs(fb.f.collection(fb.db, 'data'))]);
+    const [p, snap, proofSnap] = await Promise.all([
+      loadProfiles(),
+      fb.f.getDocs(fb.f.collection(fb.db, 'data')),
+      fb.f.getDocs(fb.f.collection(fb.db, 'proofs')),
+    ]);
     profiles = { ...p, [me]: { ...p[me], ...myProfile() } };
+    proofIds = new Set(proofSnap.docs.map((d) => d.id));
     allData = {};
     snap.forEach((d) => { allData[d.id] = d.data(); });
     if (ui.view === 'stats') refreshView();
@@ -264,6 +269,7 @@ let pending = [];      // 게시하려고 고른 파일들
 let proofs = [];       // 홈 인증샷 피드 (최신순)
 let myProofs = [];     // 내 인증샷 (최신순)
 let allData = null;    // 벌금 계산용 모두의 기록 (통계 화면을 열 때 불러옴)
+let proofIds = new Set(); // 벌금 계산용 모두의 인증샷 ('사용자_날짜')
 let unwatch = [];      // 실시간 구독 해제 함수들
 let feedOff = null;    // 인증샷 피드 구독 해제 (더 보기로 개수가 바뀌면 다시 구독)
 let lastRev = null;    // 내가 마지막으로 저장한 버전 (내 저장이 되돌아온 것은 무시)
@@ -377,18 +383,26 @@ function ddayLabel() {
   return diff > 0 ? `D-${diff}` : diff === 0 ? 'D-Day' : `D+${-diff}`;
 }
 
-// 벌금: 시작일(또는 가입일)부터 어제까지, 할 일을 안 적었거나 다 못 끝낸 날마다 부과
+// 벌금: 시작일(또는 가입일)부터 어제까지, 할 일을 안 적었거나 · 다 못 끝냈거나 · 인증샷이 없는 날마다 부과
+// 본인이 금액을 고치면 그 차이(fineAdjust)를 프로필에 저장해서, 이후 벌금은 그 위에 계속 더해진다
+function fineBase(id) {
+  const p = profiles[id] || {};
+  const todos = (id === me ? D.todos : allData[id]?.todos) || {};
+  const joined = p.createdAt ? dkey(new Date(p.createdAt)) : settings.fineStart;
+  let missed = 0;
+  for (let d = parseKey(joined > settings.fineStart ? joined : settings.fineStart); dkey(d) < today; d = addDays(d, 1)) {
+    const key = dkey(d), list = todos[key] || [];
+    const proof = proofIds.has(`${id}_${key}`) || (id === me && myProofs.some((x) => x.date === key));
+    if (!list.length || list.some((t) => !t.done) || !proof) missed++;
+  }
+  return { missed, base: missed * settings.fine };
+}
 function fineBoard() {
   if (!allData) return null;
   return Object.entries(profiles).map(([id, p]) => {
-    const todos = (id === me ? D.todos : allData[id]?.todos) || {};
-    const joined = p.createdAt ? dkey(new Date(p.createdAt)) : settings.fineStart;
-    let missed = 0;
-    for (let d = parseKey(joined > settings.fineStart ? joined : settings.fineStart); dkey(d) < today; d = addDays(d, 1)) {
-      const list = todos[dkey(d)] || [];
-      if (!list.length || list.some((t) => !t.done)) missed++;
-    }
-    return { id, nick: p.nick || '이름 없음', photo: p.photo, missed, amount: missed * settings.fine };
+    const { missed, base } = fineBase(id);
+    const adjust = p.fineAdjust || 0;
+    return { id, nick: p.nick || '이름 없음', photo: p.photo, missed, edited: !!adjust, amount: Math.max(0, base + adjust) };
   }).sort((a, b) => b.amount - a.amount || a.nick.localeCompare(b.nick));
 }
 const won = (n) => n.toLocaleString('ko-KR') + '원';
@@ -856,16 +870,21 @@ function fineCard() {
       <button data-action="finesettings" class="text-sm text-gray-500"><i class="fa-solid fa-gear mr-1"></i>설정</button>
     </div>
     <p class="mt-1 text-xs text-gray-500 leading-relaxed">
-      할 일을 안 적었거나 다 끝내지 못한 날마다 ${won(settings.fine)} · ${fmtDateKo(parseKey(settings.fineStart))}부터 · 오늘 몫은 자정이 지나면 반영돼요
+      할 일을 안 적었거나, 다 끝내지 못했거나, 인증샷이 없는 날마다 ${won(settings.fine)} · ${fmtDateKo(parseKey(settings.fineStart))}부터 · 오늘 몫은 자정이 지나면 반영돼요
     </p>
     ${rows ? `
       <ol class="mt-4 space-y-2">${rows.map((r, i) => `
         <li class="flex items-center gap-3 p-2.5 rounded-2xl ${r.id === me ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
           <span class="w-6 text-center font-bold ${r.amount && i < 3 ? 'text-brand' : 'text-gray-400'}">${i + 1}</span>
           ${avatar(r, 'w-9 h-9 text-sm')}
-          <span class="flex-1 min-w-0 font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span>
-          <span class="text-xs text-gray-500 whitespace-nowrap">${r.missed}일</span>
-          <span class="w-24 text-right font-bold tabular-nums">${won(r.amount)}</span>
+          <span class="flex-1 min-w-0">
+            <span class="block font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span>
+            <span class="block text-xs text-gray-500">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''}</span>
+          </span>
+          <span class="text-right font-bold tabular-nums whitespace-nowrap">${won(r.amount)}</span>
+          ${r.id === me
+            ? `<button data-action="myfine" class="w-7 text-gray-400" aria-label="내 벌금 수정"><i class="fa-solid fa-pen text-sm"></i></button>`
+            : '<span class="w-7"></span>'}
         </li>`).join('')}
       </ol>
       <p class="mt-3 text-right text-sm text-gray-600">총 벌금 <b class="text-brand">${won(total)}</b></p>`
@@ -1204,6 +1223,22 @@ function fineModal() {
     </form>`);
 }
 
+function myFineModal() {
+  const { missed, base } = fineBase(me);
+  const current = Math.max(0, base + (myProfile().fineAdjust || 0));
+  openModal(`
+    <h3 class="text-lg font-bold">내 벌금 수정</h3>
+    <p class="mt-1 text-sm text-gray-500">예) 벌금을 냈다면 0원으로 바꿔주세요. 앞으로 생기는 벌금은 이 금액에 더해져요.</p>
+    <p class="mt-3 text-xs text-gray-500">계산된 벌금: ${missed}일 · ${won(base)}</p>
+    <form data-form="myfine" class="mt-3 space-y-4">
+      <input type="number" name="amount" required min="0" step="100" inputmode="numeric" value="${current}" class="${INPUT}">
+      <div class="flex gap-2">
+        <button type="button" data-action="myfinereset" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">계산값으로</button>
+        <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
+      </div>
+    </form>`);
+}
+
 function proofModal(p) {
   const who = whoOf(p);
   openModal(`
@@ -1317,6 +1352,8 @@ const actions = {
   subjects: (el) => { ui.paletteFor = el.dataset.id || null; subjectModal(); },
   dday: () => ddayModal(),
   finesettings: () => fineModal(),
+  myfine: () => myFineModal(),
+  myfinereset: () => { closeModal(); updateProfile({ fineAdjust: 0 }, '계산된 벌금으로 되돌렸어요'); },
   openproof: (el) => proofModal([...proofs, ...myProofs].find((p) => p.id === el.dataset.id)),
   proofdel: async (el) => {
     if (!confirm('이 인증샷을 삭제할까요?')) return;
@@ -1428,6 +1465,11 @@ const forms = {
     $('[data-form="subadd"] input').focus();
   },
   dday: (f) => saveSettings({ examDate: f.elements.date.value }, '시험일을 바꿨어요'),
+  myfine: (f) => {
+    const amount = Math.max(0, Number(f.elements.amount.value) || 0);
+    $('#modal').innerHTML = '';
+    updateProfile({ fineAdjust: amount - fineBase(me).base }, '내 벌금을 수정했어요');
+  },
   fine: (f) => saveSettings({ fine: Math.max(0, Number(f.elements.fine.value) || 0), fineStart: f.elements.start.value }, '벌금 설정을 바꿨어요'),
   profile: (f) => {
     $('#modal').innerHTML = '';
