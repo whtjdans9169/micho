@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#E9F6EE">
   <title>정림24 건축사 스터디앱</title>
   <!-- 홈 화면에 추가했을 때 앱처럼 열리도록 -->
@@ -27,9 +27,9 @@
       },
     };
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales/ko.global.min.js"></script>
   <style>
+    /* 앱처럼 쓰도록 두 손가락 확대 · 두 번 탭 확대를 막는다 */
+    html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
     body {
       font-family: Pretendard, system-ui, sans-serif;
       -webkit-tap-highlight-color: transparent;
@@ -114,15 +114,6 @@
     /* 하단 탭 (아이폰 홈 바와 겹치지 않게) */
     .nav { bottom: max(1rem, env(safe-area-inset-bottom)); }
     @media (min-width: 768px) { .nav { bottom: 1rem; } }
-
-    /* FullCalendar */
-    .fc { --fc-border-color: rgba(15, 107, 69, .1); --fc-today-bg-color: rgba(62, 210, 150, .16); --fc-page-bg-color: transparent; font-size: 12px; }
-    .fc .fc-toolbar-title { font-size: 18px; font-weight: 700; }
-    .fc .fc-button, .fc .fc-button-primary { background: rgba(255, 255, 255, .7); border: 1px solid rgba(255, 255, 255, .9); color: #10261B; box-shadow: none !important; border-radius: 999px; }
-    .fc .fc-button-primary:not(:disabled):hover, .fc .fc-button-primary:disabled { background: #fff; color: #10261B; border-color: #fff; }
-    .fc .fc-daygrid-day-number, .fc .fc-col-header-cell-cushion { color: #10261B; text-decoration: none; }
-    .fc .fc-event { border-radius: 6px; padding: 0 3px; font-size: 11px; cursor: pointer; }
-    .fc .fc-daygrid-day { cursor: pointer; }
 
     input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
     input[type="color"]::-webkit-color-swatch { border: none; border-radius: 10px; }

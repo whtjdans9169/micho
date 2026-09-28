@@ -17,8 +17,13 @@ const SDK = 'https://www.gstatic.com/firebasejs/12.9.0/';
 // 상수
 // ============================================================
 const TITLE = '정림24 건축사 스터디앱'; // 브라우저 탭 이름
-const BRAND = '#1F9D66';
-const MATE_COLOR = '#8E7CC3';
+// 모두가 함께 쓰는 설정 (board/settings). 통계 · 시험일 화면에서 누구나 바꿀 수 있다
+const DEFAULT_SETTINGS = {
+  examDate: '2027-03-13', // 시험일 (토)
+  fine: 1000,             // 할 일을 안 적었거나 다 못 끝낸 날의 벌금
+  fineStart: '2026-09-28', // 벌금 계산 시작일
+};
+const FEED_PAGE = 24; // 홈 인증샷을 한 번에 불러오는 개수
 const DEFAULT_COLORS = ['#D97471', '#8E7CC3', '#EBC04A'];
 const PALETTE = [
   '#D97471', '#E8896B', '#F08A5D', '#EBC04A', '#C9B458', '#8BC34A', '#6CC08B', '#1F9D66',
@@ -50,7 +55,7 @@ const LEVELS = [
   [0, '#D5F0E0', '#14532D'],
 ];
 
-const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['calendar', 'fa-calendar-days', '달력'], ['stats', 'fa-chart-simple', '통계'], ['files', 'fa-folder-open', '자료'], ['me', 'fa-user', '나']];
+const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['stats', 'fa-chart-simple', '통계'], ['files', 'fa-folder-open', '자료'], ['me', 'fa-user', '나']];
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
 const DAY = 86400000;
 const AUTO_STOP = 10 * 3600000; // 타이머를 켜놓고 잊었을 때 자동으로 멈추는 시간
@@ -96,14 +101,15 @@ async function sha256(text) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// 사진을 줄인다: square면 가운데를 정사각형으로 자르고, 아니면 긴 쪽을 max에 맞춘다
-function shrinkImage(file, max, square = false) {
+// 사진을 줄인다: ratio(가로÷세로)를 주면 가운데를 그 비율로 자르고, 긴 쪽을 max에 맞춘다
+function shrinkImage(file, max, ratio = 0) {
   return new Promise((resolve, reject) => {
     const img = new Image(), url = URL.createObjectURL(file);
     img.onload = () => {
       URL.revokeObjectURL(url);
-      const m = Math.min(img.width, img.height);
-      const [sx, sy, sw, sh] = square ? [(img.width - m) / 2, (img.height - m) / 2, m, m] : [0, 0, img.width, img.height];
+      let [sw, sh] = [img.width, img.height];
+      if (ratio) sw / sh > ratio ? (sw = sh * ratio) : (sh = sw / ratio);
+      const [sx, sy] = [(img.width - sw) / 2, (img.height - sh) / 2];
       const scale = Math.min(1, max / Math.max(sw, sh));
       const c = document.createElement('canvas');
       c.width = Math.round(sw * scale);
@@ -204,6 +210,45 @@ async function deleteFile(file) {
   await Promise.all([...Array(file.chunks)].map((_, i) => fb.f.deleteDoc(chunkRef(file.id, i))));
 }
 
+// ---------- 인증샷 (하루에 한 장, id = 사용자_날짜) ----------
+// 목록용 작은 사진은 proofs에, 크게 볼 사진은 proofPhotos에 따로 저장해서 목록을 가볍게 불러온다
+const photoCache = {};
+async function saveProof(file) {
+  const photo = (await shrinkImage(file, 1000, 0.8)).toDataURL('image/jpeg', 0.78); // 인스타그램 4:5
+  const thumb = (await shrinkImage(file, 300, 0.8)).toDataURL('image/jpeg', 0.7);
+  const id = `${me}_${today}`;
+  await fb.f.setDoc(docRef('proofPhotos', id), { photo });
+  await fb.f.setDoc(docRef('proofs', id), { uid: me, nick: myProfile().nick, date: today, at: Date.now(), thumb });
+  photoCache[id] = Promise.resolve(photo);
+}
+async function deleteProof(id) {
+  await fb.f.deleteDoc(docRef('proofs', id));
+  await fb.f.deleteDoc(docRef('proofPhotos', id));
+  delete photoCache[id];
+}
+function proofPhoto(id) {
+  return (photoCache[id] ||= fb.f.getDoc(docRef('proofPhotos', id)).then((s) => s.data()?.photo || ''));
+}
+// 화면의 작은 사진을 큰 사진으로 바꿔 끼운다
+function hydrateProofs() {
+  document.querySelectorAll('img[data-proof]').forEach((img) => {
+    proofPhoto(img.dataset.proof).then((src) => { if (src) img.src = src; }).catch(() => {});
+  });
+}
+
+// ---------- 벌금 (모두의 할 일 기록으로 계산) ----------
+async function loadFines() {
+  try {
+    const [p, snap] = await Promise.all([loadProfiles(), fb.f.getDocs(fb.f.collection(fb.db, 'data'))]);
+    profiles = { ...p, [me]: { ...p[me], ...myProfile() } };
+    allData = {};
+    snap.forEach((d) => { allData[d.id] = d.data(); });
+    if (ui.view === 'stats') refreshView();
+  } catch (e) {
+    toast('벌금 현황을 불러오지 못했어요 · ' + friendly(e));
+  }
+}
+
 // ============================================================
 // 상태
 // ============================================================
@@ -212,13 +257,16 @@ let me = null;         // 로그인한 사용자 id
 let D = null;          // 내 공부 기록 · 할 일
 let profiles = {};     // id → { nick, goal, motto, photo }
 let quoteList = [];    // 사용자들이 등록한 명언
-let mateData = null;   // 스터디원 id → 데이터
+let settings = { ...DEFAULT_SETTINGS }; // 시험일 · 벌금 (모두 공유)
 let notice = null;     // 홈 공지 { text, by, at }
 let files = [];        // 자료 목록 (최신순)
 let pending = [];      // 게시하려고 고른 파일들
+let proofs = [];       // 홈 인증샷 피드 (최신순)
+let myProofs = [];     // 내 인증샷 (최신순)
+let allData = null;    // 벌금 계산용 모두의 기록 (통계 화면을 열 때 불러옴)
 let unwatch = [];      // 실시간 구독 해제 함수들
+let feedOff = null;    // 인증샷 피드 구독 해제 (더 보기로 개수가 바뀌면 다시 구독)
 let lastRev = null;    // 내가 마지막으로 저장한 버전 (내 저장이 되돌아온 것은 무시)
-let calendar = null;
 let today = dkey();
 const ui = {
   view: 'home',
@@ -228,8 +276,7 @@ const ui = {
   statDay: today,
   statWeek: mondayOf(new Date()),
   fileFilter: 'all',
-  calDate: null,
-  mates: false,
+  feedLimit: FEED_PAGE,
   quote: null,
   paletteFor: null,
   authMode: 'login',
@@ -256,7 +303,6 @@ function newData() {
     sessions: [], // { sid, s, e, d } — 날짜(d)별로 잘라서 저장
     todos: {},    // { 'YYYY-MM-DD': [{ id, text, done }] }
     running: null, // { sid, s }
-    examDate: '',
   };
 }
 function save() {
@@ -327,10 +373,25 @@ function gradeInfo() {
 }
 
 function ddayLabel() {
-  if (!D.examDate) return 'D-Day';
-  const diff = Math.round((parseKey(D.examDate) - parseKey(today)) / DAY);
+  const diff = Math.round((parseKey(settings.examDate) - parseKey(today)) / DAY);
   return diff > 0 ? `D-${diff}` : diff === 0 ? 'D-Day' : `D+${-diff}`;
 }
+
+// 벌금: 시작일(또는 가입일)부터 어제까지, 할 일을 안 적었거나 다 못 끝낸 날마다 부과
+function fineBoard() {
+  if (!allData) return null;
+  return Object.entries(profiles).map(([id, p]) => {
+    const todos = (id === me ? D.todos : allData[id]?.todos) || {};
+    const joined = p.createdAt ? dkey(new Date(p.createdAt)) : settings.fineStart;
+    let missed = 0;
+    for (let d = parseKey(joined > settings.fineStart ? joined : settings.fineStart); dkey(d) < today; d = addDays(d, 1)) {
+      const list = todos[dkey(d)] || [];
+      if (!list.length || list.some((t) => !t.done)) missed++;
+    }
+    return { id, nick: p.nick || '이름 없음', photo: p.photo, missed, amount: missed * settings.fine };
+  }).sort((a, b) => b.amount - a.amount || a.nick.localeCompare(b.nick));
+}
+const won = (n) => n.toLocaleString('ko-KR') + '원';
 
 // ============================================================
 // 로그인 흐름
@@ -340,34 +401,58 @@ async function enter(id) {
   me = id;
   profiles = p;
   quoteList = q;
-  mateData = null;
+  allData = null;
   D = Object.assign(newData(), data);
   if (!data) save();
   // 가입 중 프로필 저장이 실패했던 계정도 닉네임이 남도록
-  if (!profiles[me]) updateProfile({ nick: ui.lastNick || '나', goal: '', motto: '', photo: '' });
-  unwatch.forEach((off) => off());
-  const refresh = () => {
-    const typing = document.activeElement?.matches('input, textarea');
-    if (!$('#modal').innerHTML && !typing) render();
-  };
-  const ignore = () => {}; // 규칙 등으로 읽기가 막혀도 앱은 계속 동작
+  if (!profiles[me]) updateProfile({ nick: ui.lastNick || '나', goal: '', motto: '', photo: '', createdAt: Date.now() });
+  stopWatching();
+  const { f } = fb;
+  const ignore = () => {}; // 읽기가 막혀도 앱은 계속 동작
   unwatch = [
     // 다른 기기(폰 ↔ PC)에서 바꾼 내용을 바로 반영
-    fb.f.onSnapshot(docRef('data', id), (snap) => {
+    f.onSnapshot(docRef('data', id), (snap) => {
       const remote = snap.data();
       if (!remote || remote.rev === lastRev) return;
       D = Object.assign(newData(), remote);
-      refresh();
+      refreshView();
     }),
-    // 누가 공지를 쓰거나 자료를 올리면 모두의 화면에 바로 반영
-    fb.f.onSnapshot(docRef('board', 'notice'), (snap) => { notice = snap.data() || null; refresh(); }, ignore),
-    fb.f.onSnapshot(fb.f.collection(fb.db, 'files'), (snap) => {
+    // 누가 공지 · 시험일 · 자료 · 인증샷을 바꾸면 모두의 화면에 바로 반영
+    f.onSnapshot(docRef('board', 'notice'), (snap) => { notice = snap.data() || null; refreshView(); }, ignore),
+    f.onSnapshot(docRef('board', 'settings'), (snap) => { settings = { ...DEFAULT_SETTINGS, ...snap.data() }; refreshView(); }, ignore),
+    f.onSnapshot(f.collection(fb.db, 'files'), (snap) => {
       files = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at);
-      refresh();
+      refreshView();
+    }, ignore),
+    f.onSnapshot(f.query(f.collection(fb.db, 'proofs'), f.where('uid', '==', id)), (snap) => {
+      myProofs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at);
+      refreshView();
     }, ignore),
   ];
-  Object.assign(ui, { authError: '', authMode: 'login', view: 'home', mates: false, paletteFor: null, quote: pickQuote() });
+  ui.feedLimit = FEED_PAGE;
+  watchFeed();
+  Object.assign(ui, { authError: '', authMode: 'login', view: 'home', paletteFor: null, quote: pickQuote() });
   render();
+}
+
+function watchFeed() {
+  feedOff?.();
+  const { f } = fb;
+  feedOff = f.onSnapshot(f.query(f.collection(fb.db, 'proofs'), f.orderBy('at', 'desc'), f.limit(ui.feedLimit)), (snap) => {
+    proofs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    refreshView();
+  }, () => {});
+}
+function stopWatching() {
+  unwatch.forEach((off) => off());
+  unwatch = [];
+  feedOff?.();
+  feedOff = null;
+}
+// 실시간 변경이 들어오면 화면을 다시 그린다 (입력 중이거나 창이 열려 있으면 나중에)
+function refreshView() {
+  const typing = document.activeElement?.matches('input, textarea');
+  if (me && D && !$('#modal').innerHTML && !typing) render();
 }
 
 async function onAuth(form) {
@@ -406,8 +491,7 @@ async function logout() {
   if (!confirm('로그아웃할까요?')) return;
   commitRunning();
   await save();
-  unwatch.forEach((off) => off());
-  unwatch = [];
+  stopWatching();
   await fb.a.signOut(fb.auth);
   me = D = null;
   profiles = {};
@@ -419,32 +503,26 @@ async function logout() {
 // 화면
 // ============================================================
 function render() {
-  if (calendar) { ui.calDate = calendar.getDate(); calendar.destroy(); calendar = null; }
   const app = $('#app');
   if (ui.fatal) app.innerHTML = fatalView();
   else if (!ready) app.innerHTML = loadingView();
   else if (!me) app.innerHTML = loginView();
   else {
-    const views = { home: homeView, todo: todoView, calendar: calendarView, stats: statsView, files: filesView, me: profileView };
+    const views = { home: homeView, todo: todoView, stats: statsView, files: filesView, me: profileView };
     app.innerHTML = `
       ${navView()}
       <main class="md:pl-64">
         <div class="mx-auto max-w-6xl px-4 md:px-8 pt-5 md:pt-8 pb-32 md:pb-12">${views[ui.view]()}</div>
       </main>`;
-    if (ui.view === 'calendar') mountCalendar();
     updateLive();
+    hydrateProofs();
   }
 }
 
 function go(view) {
   if (view === 'todo') ui.todoDate = today;
+  if (view === 'stats') loadFines(); // 열 때마다 모두의 최신 기록으로 벌금을 다시 계산
   ui.view = view;
-  render();
-  window.scrollTo(0, 0);
-}
-function openTodo(key) {
-  ui.todoDate = key;
-  ui.view = 'todo';
   render();
   window.scrollTo(0, 0);
 }
@@ -453,6 +531,9 @@ const pageTitle = (title, right = '') => `
   <div class="mb-5 flex items-center justify-between gap-3">
     <h1 class="text-2xl md:text-3xl font-bold tracking-tight">${title}</h1>${right}
   </div>`;
+
+// 사진 위에 올리는 프로필 (프로필이 아직 없으면 인증샷에 적힌 닉네임으로)
+const whoOf = (item) => profiles[item.uid] || { nick: item.nick };
 
 function avatar(p, size) {
   return p?.photo
@@ -583,7 +664,37 @@ function homeView() {
         <button data-action="subjects" class="w-full mt-1 py-3 rounded-2xl text-sm text-gray-600 hover:bg-white/50"><i class="fa-solid fa-pen mr-1.5"></i>과목 편집</button>
       </section>
     </div>
-  </div>`;
+  </div>
+  ${proofFeed()}`;
+}
+
+// 모두의 인증샷: 인스타그램 게시물 비율(4:5), 왼쪽 아래에 올린 사람
+function proofFeed() {
+  const card = (p) => {
+    const who = whoOf(p);
+    return `
+    <button data-action="openproof" data-id="${p.id}" class="glass relative rounded-3xl overflow-hidden text-left">
+      <img data-proof="${p.id}" src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-[4/5] object-cover">
+      <div class="absolute inset-x-0 bottom-0 p-3 pt-10 flex items-center gap-2.5 text-white bg-gradient-to-t from-black/60 to-transparent">
+        ${avatar(who, 'w-9 h-9 text-sm ring-2 ring-white/80')}
+        <div class="min-w-0">
+          <div class="font-semibold truncate">${esc(who.nick)}</div>
+          <div class="text-xs text-white/80">${fmtDateKo(parseKey(p.date))}</div>
+        </div>
+      </div>
+    </button>`;
+  };
+  return `
+  <section class="mt-6 lg:mt-8">
+    <div class="mb-3 flex items-center justify-between">
+      <h2 class="text-xl font-bold">📸 인증샷</h2>
+      <button data-action="go" data-view="todo" class="text-sm font-semibold text-brand">나도 인증하기 <i class="fa-solid fa-chevron-right text-xs"></i></button>
+    </div>
+    ${proofs.length
+      ? `<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">${proofs.map(card).join('')}</div>
+         ${proofs.length >= ui.feedLimit ? '<button data-action="feedmore" class="glass mt-4 w-full py-3 rounded-2xl text-gray-600">더 보기</button>' : ''}`
+      : '<div class="glass rounded-3xl p-8 text-center text-gray-500">아직 인증샷이 없어요. 할 일을 끝내고 첫 인증샷을 올려보세요!</div>'}
+  </section>`;
 }
 
 function subjectRow(s) {
@@ -659,6 +770,7 @@ function todoView() {
       </div>
       <div class="mt-5 h-3 rounded-full bg-white/25 overflow-hidden"><div class="h-full rounded-full bg-white transition-all duration-500" style="width:${s.pct}%"></div></div>
     </section>
+    ${proofBanner(key)}
     <form data-form="todoadd" class="mt-4 flex gap-2">
       <input name="text" required maxlength="100" autocomplete="off" placeholder="할 일을 입력하세요" class="${INPUT} flex-1 min-w-0">
       <button class="btn px-5 rounded-2xl" aria-label="추가"><i class="fa-solid fa-plus"></i></button>
@@ -673,68 +785,44 @@ function todoView() {
       </ul>
     </section>
     ${list.length ? '' : '<p class="py-12 text-center text-gray-500">아직 할 일이 없어요</p>'}
+    ${myProofs.length ? `
+    <section class="mt-8">
+      <h3 class="mb-3 text-lg font-bold">나의 인증샷 <span class="text-sm font-normal text-gray-500">${myProofs.length}</span></h3>
+      <div class="grid grid-cols-3 gap-2">${myProofs.map((p) => `
+        <button data-action="openproof" data-id="${p.id}" class="relative rounded-xl overflow-hidden">
+          <img src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-[4/5] object-cover">
+          <span class="absolute left-1.5 bottom-1.5 px-1.5 rounded-md bg-black/45 text-white text-[11px]">${parseKey(p.date).getMonth() + 1}/${parseKey(p.date).getDate()}</span>
+        </button>`).join('')}
+      </div>
+    </section>` : ''}
   </div>`;
 }
 
-// ---------- 달력 ----------
-function calendarView() {
-  const toggle = `
-    <label class="glass flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium cursor-pointer">
-      <input type="checkbox" data-action="mates" ${ui.mates ? 'checked' : ''} class="w-4 h-4 accent-[#1F9D66]">스터디원 체크리스트
-    </label>`;
+// 가운데 카메라 배너: 오늘은 찍고, 지난 날은 그날 올린 인증샷을 보여준다
+function proofBanner(key) {
+  const mine = myProofs.find((p) => p.date === key);
+  const camera = (label) => `<input type="file" accept="image/*" capture="environment" data-input="proof" class="hidden">${label}`;
+  if (mine) {
+    return `
+    <div class="glass mt-4 rounded-3xl p-3 flex items-center gap-4">
+      <button data-action="openproof" data-id="${mine.id}" class="shrink-0"><img src="${mine.thumb}" alt="" class="w-20 aspect-[4/5] rounded-2xl object-cover"></button>
+      <div class="flex-1 min-w-0">
+        <div class="font-bold text-brand"><i class="fa-solid fa-circle-check mr-1"></i>인증 완료</div>
+        <div class="mt-0.5 text-sm text-gray-500">${fmtClock(mine.at)}에 올렸어요</div>
+      </div>
+      ${key === today ? `<label class="px-4 py-2 rounded-full bg-white/80 text-sm font-semibold cursor-pointer">${camera('다시 찍기')}</label>` : ''}
+    </div>`;
+  }
+  if (key !== today) return '<div class="glass mt-4 rounded-3xl p-4 text-center text-sm text-gray-500"><i class="fa-solid fa-camera mr-1.5"></i>이날은 인증샷이 없어요</div>';
   return `
-    ${pageTitle('달력', toggle)}
-    <section class="glass rounded-3xl p-3 md:p-6"><div id="fc"></div></section>
-    <p class="mt-4 px-2 text-sm text-gray-500">날짜를 누르면 그날의 할 일로 이동해요.</p>`;
-}
-
-function mountCalendar() {
-  const events = [];
-  for (const [d, ms] of Object.entries(totalsByDay())) {
-    if (ms >= 60000) events.push({ title: '⏱ ' + fmtHM(ms), start: d, color: '#12724A', order: 0 });
-  }
-  const addTodos = (todos, who, color) => {
-    for (const [d, list] of Object.entries(todos || {})) {
-      for (const t of list || []) {
-        events.push({
-          title: (who ? `[${who}] ` : '') + (t.done ? '✓ ' : '') + t.text,
-          start: d, order: who ? 2 : 1,
-          color: t.done ? 'rgba(255,255,255,.8)' : color,
-          textColor: t.done ? '#6B7280' : '#fff',
-        });
-      }
-    }
-  };
-  addTodos(D.todos, '', BRAND);
-  if (ui.mates && mateData) {
-    for (const [id, data] of Object.entries(mateData)) addTodos(data.todos, profiles[id]?.nick || '스터디원', MATE_COLOR);
-  }
-  calendar = new FullCalendar.Calendar($('#fc'), {
-    initialView: 'dayGridMonth',
-    initialDate: ui.calDate || undefined,
-    locale: 'ko',
-    firstDay: 1,
-    height: 'auto',
-    fixedWeekCount: false,
-    dayMaxEvents: 3,
-    headerToolbar: { left: 'prev', center: 'title', right: 'today next' },
-    dayCellContent: (arg) => String(arg.date.getDate()),
-    eventOrder: 'order,title',
-    events,
-    dateClick: (info) => openTodo(info.dateStr),
-    eventClick: (info) => openTodo(info.event.startStr.slice(0, 10)),
-  });
-  calendar.render();
-  // 사이드바 · 화면 회전 등으로 영역 크기가 바뀌면 달력 너비를 다시 맞춘다
-  new ResizeObserver(() => calendar?.updateSize()).observe($('#fc'));
-}
-
-// 켤 때마다 새로 불러와서 스터디원의 최신 체크리스트를 보여준다
-async function loadMates() {
-  profiles = { ...(await loadProfiles()), [me]: myProfile() };
-  const ids = Object.keys(profiles).filter((id) => id !== me);
-  const list = await Promise.all(ids.map(loadData));
-  mateData = Object.fromEntries(ids.map((id, i) => [id, list[i] || {}]));
+  <label class="glass mt-4 rounded-3xl p-6 flex flex-col items-center gap-3 text-center cursor-pointer">
+    <span class="btn w-16 h-16 rounded-full grid place-items-center text-2xl"><i class="fa-solid fa-camera"></i></span>
+    <span>
+      <span class="block text-lg font-bold">오늘의 인증샷 찍기</span>
+      <span class="block mt-0.5 text-sm text-gray-500">할 일을 다 끝냈다면 사진으로 인증해요</span>
+    </span>
+    ${camera('')}
+  </label>`;
 }
 
 // ---------- 통계 ----------
@@ -753,7 +841,36 @@ function statsView() {
     <div class="grid gap-4 lg:gap-6 lg:grid-cols-2 lg:items-start">
       <div>${left}</div>
       <div class="space-y-4">${right}</div>
-    </div>`;
+    </div>
+    ${fineCard()}`;
+}
+
+// 모두에게 보이는 벌금 순위 (공부 시간 같은 통계는 위쪽에 나만 보인다)
+function fineCard() {
+  const rows = fineBoard();
+  const total = rows ? rows.reduce((a, r) => a + r.amount, 0) : 0;
+  return `
+  <section class="${CARD} mt-4 lg:mt-6">
+    <div class="flex items-center justify-between gap-3">
+      <h2 class="text-lg font-bold"><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</h2>
+      <button data-action="finesettings" class="text-sm text-gray-500"><i class="fa-solid fa-gear mr-1"></i>설정</button>
+    </div>
+    <p class="mt-1 text-xs text-gray-500 leading-relaxed">
+      할 일을 안 적었거나 다 끝내지 못한 날마다 ${won(settings.fine)} · ${fmtDateKo(parseKey(settings.fineStart))}부터 · 오늘 몫은 자정이 지나면 반영돼요
+    </p>
+    ${rows ? `
+      <ol class="mt-4 space-y-2">${rows.map((r, i) => `
+        <li class="flex items-center gap-3 p-2.5 rounded-2xl ${r.id === me ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
+          <span class="w-6 text-center font-bold ${r.amount && i < 3 ? 'text-brand' : 'text-gray-400'}">${i + 1}</span>
+          ${avatar(r, 'w-9 h-9 text-sm')}
+          <span class="flex-1 min-w-0 font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span>
+          <span class="text-xs text-gray-500 whitespace-nowrap">${r.missed}일</span>
+          <span class="w-24 text-right font-bold tabular-nums">${won(r.amount)}</span>
+        </li>`).join('')}
+      </ol>
+      <p class="mt-3 text-right text-sm text-gray-600">총 벌금 <b class="text-brand">${won(total)}</b></p>`
+    : '<p class="mt-4 py-4 text-center text-sm text-gray-500"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>불러오는 중…</p>'}
+  </section>`;
 }
 
 function levelOf(ms) {
@@ -982,7 +1099,7 @@ function profileView() {
     <section class="${CARD} flex justify-between items-center">
       <div>
         <h3 class="font-semibold">시험일</h3>
-        <p class="mt-1 text-sm text-gray-600">${D.examDate ? fmtDateKo(parseKey(D.examDate)) : '설정 안 됨'}</p>
+        <p class="mt-1 text-sm text-gray-600">${fmtDateKo(parseKey(settings.examDate))} · 모두 함께</p>
       </div>
       <button data-action="dday" class="btn px-4 py-2 rounded-full text-sm font-semibold">${ddayLabel()}</button>
     </section>
@@ -1061,14 +1178,46 @@ function subjectModal() {
 function ddayModal() {
   openModal(`
     <h3 class="text-lg font-bold">시험일 설정</h3>
-    <p class="mt-1 text-sm text-gray-500">홈 화면 왼쪽 위에 D-Day가 표시돼요.</p>
+    <p class="mt-1 text-sm text-gray-500">모두 같은 시험일을 봐요. 바꾸면 스터디원 모두의 D-Day가 함께 바뀌어요.</p>
     <form data-form="dday" class="mt-5 space-y-4">
-      <input type="date" name="date" value="${esc(D.examDate)}" class="${INPUT}">
+      <input type="date" name="date" required value="${esc(settings.examDate)}" class="${INPUT}">
       <div class="flex gap-2">
-        <button type="button" data-action="ddayclear" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">지우기</button>
+        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
         <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
       </div>
     </form>`);
+}
+
+function fineModal() {
+  openModal(`
+    <h3 class="text-lg font-bold">벌금 설정</h3>
+    <p class="mt-1 text-sm text-gray-500">모두에게 똑같이 적용돼요.</p>
+    <form data-form="fine" class="mt-5 space-y-4">
+      <label class="block"><span class="text-sm font-medium text-gray-600">하루 벌금 (원)</span>
+        <input type="number" name="fine" required min="0" step="100" inputmode="numeric" value="${settings.fine}" class="mt-1.5 ${INPUT}"></label>
+      <label class="block"><span class="text-sm font-medium text-gray-600">계산 시작일</span>
+        <input type="date" name="start" required value="${esc(settings.fineStart)}" class="mt-1.5 ${INPUT}"></label>
+      <div class="flex gap-2">
+        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
+        <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
+      </div>
+    </form>`);
+}
+
+function proofModal(p) {
+  const who = whoOf(p);
+  openModal(`
+    <div class="flex items-center gap-3">
+      ${avatar(who, 'w-10 h-10 text-sm')}
+      <div class="flex-1 min-w-0">
+        <div class="font-semibold truncate">${esc(who.nick)}</div>
+        <div class="text-xs text-gray-500">${fmtDateKo(parseKey(p.date))} · ${fmtClock(p.at)}</div>
+      </div>
+      <button data-action="closemodal" class="w-8 h-8 shrink-0 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <img data-proof="${p.id}" src="${p.thumb}" alt="" class="mt-4 w-full aspect-[4/5] object-cover rounded-2xl">
+    ${p.uid === me ? `<button data-action="proofdel" data-id="${p.id}" class="mt-4 w-full py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1.5"></i>인증샷 삭제</button>` : ''}`);
+  hydrateProofs();
 }
 
 function noticeModal() {
@@ -1151,12 +1300,29 @@ function profileModal() {
 // ============================================================
 const findSubject = (id) => D.subjects.find((x) => x.id === id);
 
+async function saveSettings(patch, doneMsg) {
+  try {
+    await fb.f.setDoc(docRef('board', 'settings'), patch, { merge: true });
+    settings = { ...settings, ...patch };
+    closeModal();
+    toast(doneMsg);
+  } catch (e) {
+    toast('저장하지 못했어요 · ' + friendly(e));
+  }
+}
+
 const actions = {
   go: (el) => go(el.dataset.view),
   toggle: (el) => toggleSubject(el.dataset.id),
   subjects: (el) => { ui.paletteFor = el.dataset.id || null; subjectModal(); },
   dday: () => ddayModal(),
-  ddayclear: () => { D.examDate = ''; save(); closeModal(); },
+  finesettings: () => fineModal(),
+  openproof: (el) => proofModal([...proofs, ...myProofs].find((p) => p.id === el.dataset.id)),
+  proofdel: async (el) => {
+    if (!confirm('이 인증샷을 삭제할까요?')) return;
+    try { await deleteProof(el.dataset.id); closeModal(); toast('인증샷을 삭제했어요'); } catch (e) { toast('삭제하지 못했어요 · ' + friendly(e)); }
+  },
+  feedmore: () => { ui.feedLimit += FEED_PAGE; watchFeed(); },
   quote: () => { ui.quote = pickQuote(ui.quote); render(); },
   editprofile: () => profileModal(),
   photodel: () => { if (confirm('프로필 사진을 삭제할까요?')) updateProfile({ photo: '' }, '사진을 삭제했어요'); },
@@ -1206,13 +1372,6 @@ const actions = {
     render();
   },
 
-  mates: async (el) => {
-    ui.mates = el.checked;
-    if (ui.mates) {
-      try { await loadMates(); } catch (e) { toast('스터디원 기록을 불러오지 못했어요 · ' + friendly(e)); }
-    }
-    render();
-  },
 
   statmode: (el) => { ui.statMode = el.dataset.mode; render(); },
   statmonth: (el) => { const m = ui.statMonth; ui.statMonth = new Date(m.getFullYear(), m.getMonth() + Number(el.dataset.delta), 1); render(); },
@@ -1268,7 +1427,8 @@ const forms = {
     subjectModal();
     $('[data-form="subadd"] input').focus();
   },
-  dday: (f) => { D.examDate = f.elements.date.value; save(); closeModal(); },
+  dday: (f) => saveSettings({ examDate: f.elements.date.value }, '시험일을 바꿨어요'),
+  fine: (f) => saveSettings({ fine: Math.max(0, Number(f.elements.fine.value) || 0), fineStart: f.elements.start.value }, '벌금 설정을 바꿨어요'),
   profile: (f) => {
     $('#modal').innerHTML = '';
     updateProfile({ goal: f.elements.goal.value.trim(), motto: f.elements.motto.value.trim() });
@@ -1347,10 +1507,21 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.input === 'subcolor') { save(); subjectModal(); }
   if (t.dataset.input === 'photo' && t.files?.[0]) {
     try {
-      const photo = (await shrinkImage(t.files[0], 256, true)).toDataURL('image/jpeg', 0.82);
+      const photo = (await shrinkImage(t.files[0], 256, 1)).toDataURL('image/jpeg', 0.82);
       await updateProfile({ photo }, '프로필 사진을 바꿨어요');
     } catch (err) {
       toast(err.message);
+    }
+  }
+  if (t.dataset.input === 'proof' && t.files?.[0]) {
+    const file = t.files[0];
+    t.value = '';
+    toast('인증샷을 올리는 중…');
+    try {
+      await saveProof(file);
+      toast('오늘의 인증샷을 올렸어요 📸');
+    } catch (err) {
+      toast('올리지 못했어요 · ' + friendly(err));
     }
   }
   if (t.dataset.input === 'files' && t.files?.length) {
@@ -1359,6 +1530,9 @@ document.addEventListener('change', async (e) => {
     uploadModal();
   }
 });
+
+// 아이폰 Safari는 확대 금지 설정을 무시해서, 두 손가락 확대 동작을 직접 막는다
+['gesturestart', 'gesturechange'].forEach((type) => document.addEventListener(type, (e) => e.preventDefault()));
 
 setInterval(updateLive, 1000);
 
