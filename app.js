@@ -49,10 +49,13 @@ const LEVELS = [
   [0, '#D5F0E0', '#14532D'],
 ];
 
-const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['calendar', 'fa-calendar-days', '달력'], ['stats', 'fa-chart-simple', '통계'], ['me', 'fa-user', '나']];
+const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['calendar', 'fa-calendar-days', '달력'], ['stats', 'fa-chart-simple', '통계'], ['files', 'fa-folder-open', '자료'], ['me', 'fa-user', '나']];
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
 const DAY = 86400000;
-const AUTO_STOP = 6 * 3600000; // 타이머를 켜놓고 잊었을 때 자동으로 멈추는 시간
+const AUTO_STOP = 10 * 3600000; // 타이머를 켜놓고 잊었을 때 자동으로 멈추는 시간
+// 자료: Firebase Storage는 유료라서 파일을 900KB 조각으로 나눠 Firestore에 저장한다
+const CHUNK = 900 * 1024;
+const MAX_FILE = 10 * 1024 * 1024;
 const INPUT = 'field w-full px-4 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-brand/50';
 
 // ============================================================
@@ -92,21 +95,34 @@ async function sha256(text) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// 갤러리에서 고른 사진을 256px 정사각형으로 줄인다
-function readPhoto(file) {
+// 사진을 줄인다: square면 가운데를 정사각형으로 자르고, 아니면 긴 쪽을 max에 맞춘다
+function shrinkImage(file, max, square = false) {
   return new Promise((resolve, reject) => {
     const img = new Image(), url = URL.createObjectURL(file);
     img.onload = () => {
-      const S = 256, c = document.createElement('canvas'), m = Math.min(img.width, img.height);
-      c.width = c.height = S;
-      c.getContext('2d').drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, S, S);
       URL.revokeObjectURL(url);
-      resolve(c.toDataURL('image/jpeg', 0.82));
+      const m = Math.min(img.width, img.height);
+      const [sx, sy, sw, sh] = square ? [(img.width - m) / 2, (img.height - m) / 2, m, m] : [0, 0, img.width, img.height];
+      const scale = Math.min(1, max / Math.max(sw, sh));
+      const c = document.createElement('canvas');
+      c.width = Math.round(sw * scale);
+      c.height = Math.round(sh * scale);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; // 투명한 PNG가 JPEG로 바뀔 때 검게 되지 않도록
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      resolve(c);
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('이 사진은 읽을 수 없어요. 다른 사진을 골라주세요.')); };
     img.src = url;
   });
 }
+const toJpeg = (canvas) => new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+
+function fmtSize(bytes) {
+  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+const fmtWhen = (ts) => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()} ${fmtClock(ts)}`; };
 
 function toast(msg) {
   const el = document.createElement('div');
@@ -164,6 +180,29 @@ async function loadQuotes() {
   return snap.docs.map((d) => d.data()).sort((a, b) => (a.at || 0) - (b.at || 0));
 }
 
+// ---------- 자료 (파일을 조각내서 files/{id}/chunks/{번호} 에 저장) ----------
+const chunkRef = (id, i) => fb.f.doc(fb.db, 'files', id, 'chunks', String(i));
+
+async function uploadFile(blob, meta, onProgress) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const id = fb.f.doc(fb.f.collection(fb.db, 'files')).id;
+  const chunks = Math.max(1, Math.ceil(bytes.length / CHUNK));
+  for (let i = 0; i < chunks; i++) {
+    await fb.f.setDoc(chunkRef(id, i), { data: fb.f.Bytes.fromUint8Array(bytes.subarray(i * CHUNK, (i + 1) * CHUNK)) });
+    onProgress((i + 1) / chunks);
+  }
+  // 조각을 다 올린 뒤에 목록에 보이도록 정보는 마지막에 저장
+  await fb.f.setDoc(fb.f.doc(fb.db, 'files', id), { ...meta, size: bytes.length, chunks });
+}
+async function downloadFile(file) {
+  const parts = await Promise.all([...Array(file.chunks)].map((_, i) => fb.f.getDoc(chunkRef(file.id, i))));
+  return new Blob(parts.map((p) => p.data().data.toUint8Array()), { type: file.type });
+}
+async function deleteFile(file) {
+  await fb.f.deleteDoc(fb.f.doc(fb.db, 'files', file.id));
+  await Promise.all([...Array(file.chunks)].map((_, i) => fb.f.deleteDoc(chunkRef(file.id, i))));
+}
+
 // ============================================================
 // 상태
 // ============================================================
@@ -173,7 +212,10 @@ let D = null;          // 내 공부 기록 · 할 일
 let profiles = {};     // id → { nick, goal, motto, photo }
 let quoteList = [];    // 사용자들이 등록한 명언
 let mateData = null;   // 스터디원 id → 데이터
-let unwatch = null;
+let notice = null;     // 홈 공지 { text, by, at }
+let files = [];        // 자료 목록 (최신순)
+let pending = [];      // 게시하려고 고른 파일들
+let unwatch = [];      // 실시간 구독 해제 함수들
 let lastRev = null;    // 내가 마지막으로 저장한 버전 (내 저장이 되돌아온 것은 무시)
 let calendar = null;
 let today = dkey();
@@ -184,6 +226,7 @@ const ui = {
   statMonth: monthOf(new Date()),
   statDay: today,
   statWeek: mondayOf(new Date()),
+  fileFilter: 'all',
   calDate: null,
   mates: false,
   quote: null,
@@ -301,15 +344,27 @@ async function enter(id) {
   if (!data) save();
   // 가입 중 프로필 저장이 실패했던 계정도 닉네임이 남도록
   if (!profiles[me]) updateProfile({ nick: ui.lastNick || '나', goal: '', motto: '', photo: '' });
-  unwatch?.();
-  // 다른 기기(폰 ↔ PC)에서 바꾼 내용을 바로 반영
-  unwatch = fb.f.onSnapshot(docRef('data', id), (snap) => {
-    const remote = snap.data();
-    if (!remote || remote.rev === lastRev) return;
-    D = Object.assign(newData(), remote);
+  unwatch.forEach((off) => off());
+  const refresh = () => {
     const typing = document.activeElement?.matches('input, textarea');
     if (!$('#modal').innerHTML && !typing) render();
-  });
+  };
+  const ignore = () => {}; // 규칙 등으로 읽기가 막혀도 앱은 계속 동작
+  unwatch = [
+    // 다른 기기(폰 ↔ PC)에서 바꾼 내용을 바로 반영
+    fb.f.onSnapshot(docRef('data', id), (snap) => {
+      const remote = snap.data();
+      if (!remote || remote.rev === lastRev) return;
+      D = Object.assign(newData(), remote);
+      refresh();
+    }),
+    // 누가 공지를 쓰거나 자료를 올리면 모두의 화면에 바로 반영
+    fb.f.onSnapshot(docRef('board', 'notice'), (snap) => { notice = snap.data() || null; refresh(); }, ignore),
+    fb.f.onSnapshot(fb.f.collection(fb.db, 'files'), (snap) => {
+      files = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at);
+      refresh();
+    }, ignore),
+  ];
   Object.assign(ui, { authError: '', authMode: 'login', view: 'home', mates: false, paletteFor: null, quote: pickQuote() });
   render();
 }
@@ -350,8 +405,8 @@ async function logout() {
   if (!confirm('로그아웃할까요?')) return;
   commitRunning();
   await save();
-  unwatch?.();
-  unwatch = null;
+  unwatch.forEach((off) => off());
+  unwatch = [];
   await fb.a.signOut(fb.auth);
   me = D = null;
   profiles = {};
@@ -369,7 +424,7 @@ function render() {
   else if (!ready) app.innerHTML = loadingView();
   else if (!me) app.innerHTML = loginView();
   else {
-    const views = { home: homeView, todo: todoView, calendar: calendarView, stats: statsView, me: profileView };
+    const views = { home: homeView, todo: todoView, calendar: calendarView, stats: statsView, files: filesView, me: profileView };
     app.innerHTML = `
       ${navView()}
       <main class="md:pl-64">
@@ -480,10 +535,25 @@ function loginView() {
   </div>`;
 }
 
-// ---------- 홈 (타이머) ----------
+// ---------- 홈 (공지 · 타이머) ----------
+function noticeBanner() {
+  return `
+  <button data-action="notice" class="glass w-full rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex items-start gap-3 text-left">
+    <div class="btn w-10 h-10 shrink-0 rounded-2xl grid place-items-center"><i class="fa-solid fa-bullhorn"></i></div>
+    <div class="flex-1 min-w-0 ${notice ? '' : 'self-center'}">
+      ${notice
+        ? `<p class="font-medium whitespace-pre-line break-words line-clamp-3">${esc(notice.text)}</p>
+           <p class="mt-1 text-xs text-gray-500">${esc(notice.by)} · ${fmtWhen(notice.at)}</p>`
+        : '<p class="text-gray-500">공지가 없어요. 눌러서 스터디원들에게 공지를 남겨보세요.</p>'}
+    </div>
+    <i class="fa-solid fa-pen text-gray-400 self-center"></i>
+  </button>`;
+}
+
 function homeView() {
   const ts = todoStats(today), q = ui.quote;
   return `
+  ${noticeBanner()}
   <div class="grid gap-4 lg:gap-6 lg:grid-cols-5">
     <section class="glass-hero rounded-[2rem] p-6 md:p-8 lg:col-span-3 flex flex-col lg:min-h-[440px]">
       <div class="flex items-center justify-between">
@@ -546,12 +616,12 @@ function updateLive() {
     render();
     return;
   }
-  // 한 번에 6시간을 넘기면 켜놓고 잊은 것으로 보고 6시간까지만 기록한다
+  // 한 번에 AUTO_STOP을 넘기면 켜놓고 잊은 것으로 보고 거기까지만 기록한다
   if (D.running && Date.now() - D.running.s > AUTO_STOP) {
     commitRunning(D.running.s + AUTO_STOP);
     save();
     render();
-    toast('6시간 넘게 켜져 있어서 타이머를 자동으로 멈췄어요');
+    toast(`${AUTO_STOP / 3600000}시간 넘게 켜져 있어서 타이머를 자동으로 멈췄어요`);
     return;
   }
   const list = sessionsOn(today);
@@ -813,6 +883,61 @@ function subjectBreakdown(list) {
   return `<section class="${CARD}"><h3 class="font-semibold">과목별 공부 시간</h3><ul class="mt-4 space-y-4">${rows}</ul></section>`;
 }
 
+// ---------- 자료 ----------
+const isImage = (f) => (f.type || '').startsWith('image/');
+function fileIcon(f) {
+  const ext = f.name.split('.').pop().toLowerCase();
+  if (isImage(f)) return 'fa-file-image';
+  if (ext === 'pdf') return 'fa-file-pdf';
+  if (['zip', 'rar', '7z'].includes(ext)) return 'fa-file-zipper';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return 'fa-file-excel';
+  if (['ppt', 'pptx'].includes(ext)) return 'fa-file-powerpoint';
+  if (['doc', 'docx', 'hwp', 'hwpx', 'txt'].includes(ext)) return 'fa-file-lines';
+  if (['dwg', 'dxf'].includes(ext)) return 'fa-compass-drafting';
+  if ((f.type || '').startsWith('video/')) return 'fa-file-video';
+  return 'fa-file';
+}
+
+function filesView() {
+  const shown = files.filter((f) => ui.fileFilter === 'all' || (ui.fileFilter === 'photo') === isImage(f));
+  const tabs = [['all', '전체'], ['photo', '사진'], ['doc', '파일']].map(([k, l]) => `
+    <button data-action="filefilter" data-mode="${k}" class="px-5 py-2 rounded-full text-sm font-semibold transition ${ui.fileFilter === k ? 'btn' : 'text-gray-600'}">${l}</button>`).join('');
+  const upload = `
+    <label class="btn px-4 py-2.5 rounded-full text-sm font-semibold cursor-pointer whitespace-nowrap">
+      <i class="fa-solid fa-arrow-up-from-bracket mr-1.5"></i>올리기
+      <input type="file" multiple data-input="files" class="hidden">
+    </label>`;
+  return `
+    ${pageTitle('자료', upload)}
+    <div class="glass rounded-full p-1 inline-flex mb-4">${tabs}</div>
+    ${shown.length
+      ? `<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">${shown.map(fileCard).join('')}</div>`
+      : `<div class="glass rounded-3xl p-10 text-center text-gray-500">
+           <i class="fa-regular fa-folder-open text-4xl text-brand"></i>
+           <p class="mt-3">아직 올라온 자료가 없어요.<br>시험 자료나 사진을 올려 스터디원들과 나눠보세요.</p>
+         </div>`}`;
+}
+
+function fileCard(f) {
+  return `
+  <button data-action="openfile" data-id="${f.id}" class="glass rounded-3xl p-2 text-left flex flex-col min-w-0">
+    <div class="w-full aspect-square rounded-2xl overflow-hidden grid place-items-center ${f.thumb ? '' : 'bg-white/60'}">
+      ${f.thumb ? `<img src="${f.thumb}" alt="" loading="lazy" class="w-full h-full object-cover">` : `<i class="fa-solid ${fileIcon(f)} text-4xl text-brand"></i>`}
+    </div>
+    <div class="w-full min-w-0 px-1.5 pt-2 pb-1">
+      <p class="text-sm font-semibold truncate">${esc(f.caption || f.name)}</p>
+      ${f.caption ? `<p class="text-xs text-gray-600 truncate">${esc(f.name)}</p>` : ''}
+      <p class="text-xs text-gray-500 truncate">${esc(f.by)} · ${fmtWhen(f.at)}</p>
+    </div>
+  </button>`;
+}
+
+// 파일 조각을 합친 결과는 다시 받지 않도록 기억해둔다
+const blobUrls = {};
+async function fileUrl(f) {
+  return (blobUrls[f.id] ||= URL.createObjectURL(await downloadFile(f)));
+}
+
 // ---------- 나 (프로필 · 등급) ----------
 function profileView() {
   const u = myProfile(), g = gradeInfo(), q = allQuotes();
@@ -880,10 +1005,10 @@ function profileView() {
 // ============================================================
 // 모달
 // ============================================================
-function openModal(html) {
+function openModal(html, wide = false) {
   $('#modal').innerHTML = `
   <div class="fixed inset-0 z-50 bg-black/25 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-6" data-action="backdrop">
-    <div class="glass-strong w-full sm:max-w-md rounded-t-[2rem] sm:rounded-[2rem] p-6 pb-8 max-h-[85vh] overflow-y-auto">${html}</div>
+    <div class="glass-strong w-full ${wide ? 'sm:max-w-2xl' : 'sm:max-w-md'} rounded-t-[2rem] sm:rounded-[2rem] p-6 pb-8 max-h-[90vh] overflow-y-auto">${html}</div>
   </div>`;
 }
 function closeModal() {
@@ -945,6 +1070,65 @@ function ddayModal() {
     </form>`);
 }
 
+function noticeModal() {
+  openModal(`
+    <h3 class="text-lg font-bold"><i class="fa-solid fa-bullhorn text-brand mr-2"></i>공지</h3>
+    <p class="mt-1 text-sm text-gray-500">누구나 쓸 수 있고, 게시하면 모두의 홈 화면에 바로 떠요.</p>
+    ${notice ? `<p class="mt-3 text-xs text-gray-500">지금 공지: ${esc(notice.by)} · ${fmtWhen(notice.at)}</p>` : ''}
+    <form data-form="notice" class="mt-3 space-y-3">
+      <textarea name="text" rows="5" maxlength="500" required placeholder="예) 이번 주 토요일 오후 2시 모의고사 같이 풀어요!" class="${INPUT} resize-none">${esc(notice?.text)}</textarea>
+      <div class="flex gap-2">
+        ${notice ? '<button type="button" data-action="noticedel" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">공지 내리기</button>' : ''}
+        <button class="btn flex-1 py-3 rounded-2xl font-semibold">게시</button>
+      </div>
+    </form>`);
+}
+
+function uploadModal() {
+  openModal(`
+    <h3 class="text-lg font-bold">자료 올리기</h3>
+    <ul class="mt-4 space-y-2 max-h-48 overflow-y-auto">${pending.map((f) => `
+      <li class="flex items-center gap-3 p-2.5 rounded-xl bg-white/60 text-sm">
+        <i class="fa-solid ${fileIcon(f)} text-brand w-5 text-center"></i>
+        <span class="flex-1 truncate">${esc(f.name)}</span>
+        <span class="text-gray-500">${fmtSize(f.size)}</span>
+      </li>`).join('')}
+    </ul>
+    <form data-form="upload" class="mt-4 space-y-3">
+      <textarea name="caption" rows="2" maxlength="200" placeholder="설명 (선택) · 예) 대지계획 기출 풀이" class="${INPUT} resize-none"></textarea>
+      <p class="text-xs text-gray-500">사진은 자동으로 줄여서 올려요 · 파일 하나당 최대 10MB</p>
+      <div class="flex gap-2">
+        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
+        <button data-submit class="btn flex-1 py-3 rounded-2xl font-semibold">게시</button>
+      </div>
+    </form>`);
+}
+
+function fileModal(f) {
+  openModal(`
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h3 class="text-lg font-bold break-words">${esc(f.caption || f.name)}</h3>
+        <p class="mt-1 text-xs text-gray-500 break-all">${esc(f.by)} · ${fmtWhen(f.at)} · ${esc(f.name)} · ${fmtSize(f.size)}</p>
+      </div>
+      <button data-action="closemodal" class="w-8 h-8 shrink-0 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    ${isImage(f) && f.thumb
+      ? `<div id="preview" class="mt-4 rounded-2xl overflow-hidden bg-white/60"><img src="${f.thumb}" alt="" class="w-full max-h-[60vh] object-contain blur-sm"></div>`
+      : `<div class="mt-4 rounded-2xl bg-white/60 py-12 grid place-items-center"><i class="fa-solid ${fileIcon(f)} text-5xl text-brand"></i></div>`}
+    <div class="mt-4 flex gap-2">
+      ${f.uid === me ? `<button data-action="filedel" data-id="${f.id}" class="px-5 py-3 rounded-2xl bg-white/70 text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>` : ''}
+      <button data-action="filesave" data-id="${f.id}" class="btn flex-1 py-3 rounded-2xl font-semibold"><i class="fa-solid fa-download mr-1.5"></i>저장</button>
+    </div>`, true);
+  // 사진이면 흐린 미리보기를 먼저 보여주고, 원본을 받으면 바꾼다
+  if (isImage(f) && f.thumb) {
+    fileUrl(f).then((url) => {
+      const img = $('#preview img');
+      if (img) { img.src = url; img.classList.remove('blur-sm'); }
+    }).catch((e) => toast('사진을 불러오지 못했어요 · ' + friendly(e)));
+  }
+}
+
 function profileModal() {
   const u = myProfile();
   openModal(`
@@ -977,6 +1161,35 @@ const actions = {
   photodel: () => { if (confirm('프로필 사진을 삭제할까요?')) updateProfile({ photo: '' }, '사진을 삭제했어요'); },
   closemodal: () => closeModal(),
   backdrop: (el, e) => { if (e.target === el) closeModal(); },
+
+  notice: () => noticeModal(),
+  noticedel: async () => {
+    if (!confirm('공지를 내릴까요?')) return;
+    try { await fb.f.deleteDoc(docRef('board', 'notice')); closeModal(); } catch (e) { toast('공지를 내리지 못했어요 · ' + friendly(e)); }
+  },
+
+  filefilter: (el) => { ui.fileFilter = el.dataset.mode; render(); },
+  openfile: (el) => fileModal(files.find((x) => x.id === el.dataset.id)),
+  filesave: async (el) => {
+    const f = files.find((x) => x.id === el.dataset.id);
+    el.disabled = true;
+    el.textContent = '불러오는 중…';
+    try {
+      const a = document.createElement('a');
+      a.href = await fileUrl(f);
+      a.download = f.name;
+      a.click();
+    } catch (e) {
+      toast('파일을 불러오지 못했어요 · ' + friendly(e));
+    }
+    el.disabled = false;
+    el.innerHTML = '<i class="fa-solid fa-download mr-1.5"></i>저장';
+  },
+  filedel: async (el) => {
+    const f = files.find((x) => x.id === el.dataset.id);
+    if (!confirm(`'${f.caption || f.name}' 자료를 삭제할까요?`)) return;
+    try { await deleteFile(f); closeModal(); toast('자료를 삭제했어요'); } catch (e) { toast('삭제하지 못했어요 · ' + friendly(e)); }
+  },
 
   tododay: (el) => { ui.todoDate = dkey(addDays(parseKey(ui.todoDate), Number(el.dataset.delta))); render(); },
   todotoday: () => { ui.todoDate = today; render(); },
@@ -1059,6 +1272,50 @@ const forms = {
     $('#modal').innerHTML = '';
     updateProfile({ goal: f.elements.goal.value.trim(), motto: f.elements.motto.value.trim() });
   },
+  notice: async (f) => {
+    const text = f.elements.text.value.trim();
+    if (!text) return;
+    try {
+      await fb.f.setDoc(docRef('board', 'notice'), { text, by: myProfile().nick, uid: me, at: Date.now() });
+      closeModal();
+      toast('공지를 게시했어요');
+    } catch (e) {
+      toast('게시하지 못했어요 · ' + friendly(e));
+    }
+  },
+  upload: async (f) => {
+    const caption = f.elements.caption.value.trim();
+    const btn = f.querySelector('[data-submit]');
+    btn.disabled = true;
+    let done = 0;
+    const failed = [];
+    for (const [i, file] of pending.entries()) {
+      try {
+        let blob = file, type = file.type || 'application/octet-stream', name = file.name, thumb = '';
+        // 사진은 줄여서 올리고 목록용 작은 미리보기도 만든다 (브라우저가 못 읽는 사진은 원본 그대로)
+        if (type.startsWith('image/') && type !== 'image/gif') {
+          try {
+            blob = await toJpeg(await shrinkImage(file, 2400));
+            thumb = (await shrinkImage(file, 400)).toDataURL('image/jpeg', 0.7);
+            type = 'image/jpeg';
+            name = name.replace(/\.[^.]+$/, '') + '.jpg';
+          } catch {
+            blob = file;
+          }
+        }
+        if (blob.size > MAX_FILE) { failed.push(`${file.name}(10MB 초과)`); continue; }
+        await uploadFile(blob, { name, type, caption, thumb, by: myProfile().nick, uid: me, at: Date.now() }, (p) => {
+          btn.textContent = `올리는 중 ${i + 1}/${pending.length} · ${Math.round(p * 100)}%`;
+        });
+        done++;
+      } catch (e) {
+        failed.push(`${file.name}(${friendly(e)})`);
+      }
+    }
+    pending = [];
+    closeModal();
+    toast(failed.length ? `${done}개 게시 · 실패: ${failed.join(', ')}` : `자료 ${done}개를 게시했어요`);
+  },
 };
 
 document.addEventListener('click', (e) => {
@@ -1089,10 +1346,16 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.input === 'subcolor') { save(); subjectModal(); }
   if (t.dataset.input === 'photo' && t.files?.[0]) {
     try {
-      await updateProfile({ photo: await readPhoto(t.files[0]) }, '프로필 사진을 바꿨어요');
+      const photo = (await shrinkImage(t.files[0], 256, true)).toDataURL('image/jpeg', 0.82);
+      await updateProfile({ photo }, '프로필 사진을 바꿨어요');
     } catch (err) {
       toast(err.message);
     }
+  }
+  if (t.dataset.input === 'files' && t.files?.length) {
+    pending = [...t.files];
+    t.value = '';
+    uploadModal();
   }
 });
 
