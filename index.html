@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#2E9E6B">
+  <meta name="theme-color" content="#E6F5EC">
   <title>micho 스터디 플래너</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
@@ -12,7 +12,7 @@
     tailwind.config = {
       theme: {
         extend: {
-          colors: { brand: { DEFAULT: '#2E9E6B', dark: '#23805A', soft: '#E3F4EA' } },
+          colors: { brand: { DEFAULT: '#1F9D66', dark: '#12724A', soft: '#E3F4EA' } },
           fontFamily: { sans: ['Pretendard', 'system-ui', 'sans-serif'] },
         },
       },
@@ -21,22 +21,107 @@
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales/ko.global.min.js"></script>
   <style>
-    body { font-family: Pretendard, system-ui, sans-serif; -webkit-tap-highlight-color: transparent; }
-    .fc { --fc-border-color: #f1f1f1; --fc-today-bg-color: #E3F4EA; font-size: 12px; }
+    body {
+      font-family: Pretendard, system-ui, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      color: #10261B;
+      background: #E9F6EE;
+      min-height: 100vh;
+    }
+    /* 배경: 초록 계열 메쉬 그라데이션 */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background:
+        radial-gradient(40rem 40rem at 5% -5%, rgba(52, 199, 138, .45), transparent 60%),
+        radial-gradient(34rem 34rem at 105% 5%, rgba(125, 211, 252, .35), transparent 60%),
+        radial-gradient(40rem 40rem at 60% 115%, rgba(163, 230, 53, .28), transparent 60%),
+        linear-gradient(180deg, #F3FBF6, #E1F2E8);
+    }
+
+    /* 리퀴드 글라스 */
+    .glass {
+      background: rgba(255, 255, 255, .55);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+      backdrop-filter: blur(24px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, .75);
+      box-shadow: 0 12px 32px -14px rgba(15, 107, 69, .28), inset 0 1px 0 rgba(255, 255, 255, .9);
+    }
+    .glass-strong {
+      background: rgba(255, 255, 255, .82);
+      -webkit-backdrop-filter: blur(30px) saturate(180%);
+      backdrop-filter: blur(30px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, .9);
+      box-shadow: 0 24px 60px -20px rgba(15, 107, 69, .35);
+    }
+    /* 초록 그라데이션 유리 (메인 카드) */
+    .glass-hero {
+      position: relative;
+      overflow: hidden;
+      color: #fff;
+      background: linear-gradient(135deg, #3ED296 0%, #1F9D66 55%, #0F6B45 100%);
+      border: 1px solid rgba(255, 255, 255, .35);
+      box-shadow: 0 24px 48px -18px rgba(15, 107, 69, .55), inset 0 1px 0 rgba(255, 255, 255, .45);
+    }
+    .glass-hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(90% 70% at 0% 0%, rgba(255, 255, 255, .35), transparent 55%),
+        radial-gradient(60% 60% at 100% 100%, rgba(163, 230, 53, .25), transparent 60%);
+    }
+    .glass-hero > * { position: relative; }
+    /* 초록 카드 위의 작은 유리 */
+    .chip {
+      background: rgba(255, 255, 255, .18);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, .35);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35);
+    }
+    .btn {
+      color: #fff;
+      background: linear-gradient(135deg, #3ED296, #1F9D66 60%, #12724A);
+      box-shadow: 0 10px 22px -10px rgba(31, 157, 102, .8), inset 0 1px 0 rgba(255, 255, 255, .45);
+    }
+    .btn:disabled { opacity: .6; }
+    .field {
+      background: rgba(255, 255, 255, .65);
+      border: 1px solid rgba(255, 255, 255, .9);
+      box-shadow: inset 0 1px 2px rgba(15, 107, 69, .08);
+    }
+    /* 과목 재생 버튼: 유리구슬 느낌 */
+    .orb {
+      background-image: linear-gradient(145deg, rgba(255, 255, 255, .5), rgba(255, 255, 255, 0) 55%);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, .7), 0 8px 18px -6px var(--c);
+      transition: box-shadow .2s;
+    }
+    .orb.on { box-shadow: inset 0 1px 1px rgba(255, 255, 255, .7), 0 0 0 6px color-mix(in srgb, var(--c) 28%, transparent), 0 8px 18px -6px var(--c); }
+
+    /* 하단 탭 (아이폰 홈 바와 겹치지 않게) */
+    .nav { bottom: max(1rem, env(safe-area-inset-bottom)); }
+    @media (min-width: 768px) { .nav { bottom: 1rem; } }
+
+    /* FullCalendar */
+    .fc { --fc-border-color: rgba(15, 107, 69, .1); --fc-today-bg-color: rgba(62, 210, 150, .16); --fc-page-bg-color: transparent; font-size: 12px; }
     .fc .fc-toolbar-title { font-size: 18px; font-weight: 700; }
-    .fc .fc-button, .fc .fc-button-primary { background: #fff; border: 1px solid #e5e7eb; color: #374151; box-shadow: none !important; }
-    .fc .fc-button-primary:not(:disabled):hover, .fc .fc-button-primary:disabled { background: #f3f4f6; color: #111827; border-color: #e5e7eb; }
-    .fc .fc-daygrid-day-number, .fc .fc-col-header-cell-cushion { color: #374151; text-decoration: none; }
-    .fc .fc-event { border-radius: 4px; padding: 0 2px; font-size: 11px; cursor: pointer; }
+    .fc .fc-button, .fc .fc-button-primary { background: rgba(255, 255, 255, .7); border: 1px solid rgba(255, 255, 255, .9); color: #10261B; box-shadow: none !important; border-radius: 999px; }
+    .fc .fc-button-primary:not(:disabled):hover, .fc .fc-button-primary:disabled { background: #fff; color: #10261B; border-color: #fff; }
+    .fc .fc-daygrid-day-number, .fc .fc-col-header-cell-cushion { color: #10261B; text-decoration: none; }
+    .fc .fc-event { border-radius: 6px; padding: 0 3px; font-size: 11px; cursor: pointer; }
     .fc .fc-daygrid-day { cursor: pointer; }
+
     input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
-    input[type="color"]::-webkit-color-swatch { border: none; border-radius: 8px; }
+    input[type="color"]::-webkit-color-swatch { border: none; border-radius: 10px; }
   </style>
 </head>
-<body class="bg-gray-50 text-gray-900 antialiased">
-  <div id="app" class="max-w-md mx-auto min-h-screen bg-white relative"></div>
+<body class="antialiased">
+  <div id="app"></div>
   <div id="modal"></div>
-  <script src="firebase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

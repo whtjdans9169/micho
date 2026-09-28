@@ -1,34 +1,26 @@
 'use strict';
 
 // ============================================================
-// 브라우저 저장소 (LocalStorage)
+// Firebase 설정 (콘솔 → 프로젝트 설정 → 내 앱)
 // ============================================================
-const store = {
-  get(key, fallback) {
-    try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v); } catch { return fallback; }
-  },
-  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} },
-  remove(key) { try { localStorage.removeItem(key); } catch {} },
+const FIREBASE = {
+  apiKey: 'AIzaSyC5scbJ2Bp3K63YKV5OCoxCneKLWeDHEj8',
+  authDomain: 'micho-e90ca.firebaseapp.com',
+  projectId: 'micho-e90ca',
+  storageBucket: 'micho-e90ca.firebasestorage.app',
+  messagingSenderId: '433492736438',
+  appId: '1:433492736438:web:bca75ba32d8b3659912917',
 };
-const sessionStore = {
-  get() { try { return sessionStorage.getItem('micho:session'); } catch { return null; } },
-  set(v) { try { v ? sessionStorage.setItem('micho:session', v) : sessionStorage.removeItem('micho:session'); } catch {} },
-};
-const KEY = {
-  users: 'micho:users',
-  quotes: 'micho:quotes',
-  remember: 'micho:remember',
-  data: (id) => 'micho:data:' + id,
-};
+const SDK = 'https://www.gstatic.com/firebasejs/12.9.0/';
 
 // ============================================================
 // 상수
 // ============================================================
-const BRAND = '#2E9E6B';
+const BRAND = '#1F9D66';
 const MATE_COLOR = '#8E7CC3';
 const DEFAULT_COLORS = ['#D97471', '#8E7CC3', '#EBC04A'];
 const PALETTE = [
-  '#D97471', '#E8896B', '#F08A5D', '#EBC04A', '#C9B458', '#8BC34A', '#6CC08B', '#2E9E6B',
+  '#D97471', '#E8896B', '#F08A5D', '#EBC04A', '#C9B458', '#8BC34A', '#6CC08B', '#1F9D66',
   '#4DB6AC', '#5DA9E9', '#3F7FD6', '#8E7CC3', '#B07CC6', '#E48AB4', '#B56576', '#4A5568',
 ];
 
@@ -54,11 +46,13 @@ const LEVELS = [
   [10, '#1E7A4C', '#fff'],
   [7, '#3FA46F', '#fff'],
   [4, '#8FD3AC', '#14532D'],
-  [0, '#DDF3E6', '#14532D'],
+  [0, '#D5F0E0', '#14532D'],
 ];
 
+const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['calendar', 'fa-calendar-days', '달력'], ['stats', 'fa-chart-simple', '통계'], ['me', 'fa-user', '나']];
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
 const DAY = 86400000;
+const INPUT = 'field w-full px-4 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-brand/50';
 
 // ============================================================
 // 유틸
@@ -72,15 +66,6 @@ const parseKey = (k) => { const [y, m, d] = k.split('-').map(Number); return new
 const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 const mondayOf = (d) => addDays(d, -((d.getDay() + 6) % 7));
 const monthOf = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
-const safeColor = (c) => (/^#[0-9a-f]{6}$/i.test(c) ? c : '#9CA3AF');
-const safePhoto = (p) => (typeof p === 'string' && p.startsWith('data:image/') ? p : '');
-
-// 키 순서와 상관없이 같은 데이터인지 비교하기 위한 직렬화
-function stable(v) {
-  if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
-  if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
-  return JSON.stringify(v);
-}
 
 function fmtHMS(ms) {
   const t = Math.floor(ms / 1000);
@@ -101,8 +86,7 @@ function fmtClock(ts) {
 const fmtDate = (d) => `${d.getMonth() + 1}. ${d.getDate()} (${WD[d.getDay()]})`;
 const fmtDateKo = (d) => `${d.getMonth() + 1}월 ${d.getDate()}일 (${WD[d.getDay()]})`;
 
-async function hash(text) {
-  if (!window.crypto?.subtle) return 'plain:' + text;
+async function sha256(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -125,76 +109,33 @@ function readPhoto(file) {
 
 function toast(msg) {
   const el = document.createElement('div');
-  el.className = 'fixed left-1/2 -translate-x-1/2 bottom-28 z-[60] px-4 py-2.5 rounded-full bg-gray-900/90 text-white text-sm shadow-lg whitespace-nowrap';
+  el.className = 'glass-strong fixed left-1/2 -translate-x-1/2 bottom-28 md:bottom-8 z-[60] px-5 py-3 rounded-full text-sm font-medium max-w-[90vw] text-center';
   el.textContent = msg;
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 2400);
+  setTimeout(() => el.remove(), 2600);
 }
 
 // ============================================================
-// 저장 방식 1: 이 기기에만 저장 (Firebase 설정이 없을 때)
+// Firebase
 // ============================================================
-const LocalBackend = {
-  name: 'local',
-  async restore() {
-    const n = store.get(KEY.remember, null) || sessionStore.get();
-    return n && store.get(KEY.users, {})[n] ? n : null;
-  },
-  async signUp(nick, pw, profile, remember) {
-    const all = store.get(KEY.users, {});
-    if (all[nick]) throw new Error('이미 있는 닉네임이에요.');
-    all[nick] = { ...profile, hash: await hash(nick + '\n' + pw), createdAt: Date.now() };
-    store.set(KEY.users, all);
-    this.remember(nick, remember);
-    return nick;
-  },
-  async signIn(nick, pw, remember) {
-    const u = store.get(KEY.users, {})[nick];
-    if (!u) throw new Error('없는 닉네임이에요. "처음이에요"에서 가입해주세요.');
-    if (u.hash !== await hash(nick + '\n' + pw)) throw new Error('비밀번호가 맞지 않아요.');
-    this.remember(nick, remember);
-    return nick;
-  },
-  remember(nick, remember) {
-    if (remember) store.set(KEY.remember, nick); else store.remove(KEY.remember);
-    sessionStore.set(nick);
-  },
-  async signOut() { store.remove(KEY.remember); sessionStore.set(null); },
-  async loadProfiles() {
-    const m = {};
-    for (const [n, u] of Object.entries(store.get(KEY.users, {}))) m[n] = { nick: n, goal: u.goal || '', motto: u.motto || '', photo: u.photo || '' };
-    return m;
-  },
-  async saveProfile(id, patch) {
-    const all = store.get(KEY.users, {});
-    all[id] = { ...all[id], ...patch };
-    store.set(KEY.users, all);
-  },
-  async loadData(id) { return store.get(KEY.data(id), null); },
-  async saveData(id, data) { store.set(KEY.data(id), data); },
-  async loadQuotes() { return store.get(KEY.quotes, []); },
-  async addQuote(q) { const list = store.get(KEY.quotes, []); list.push(q); store.set(KEY.quotes, list); },
-  watchData() { return () => {}; },
-};
+let fb = null; // { a: auth SDK, f: firestore SDK, auth, db }
 
-// ============================================================
-// 저장 방식 2: Firebase (스터디원끼리 공유)
-// ============================================================
-async function createFirebaseBackend(config) {
-  const base = 'https://www.gstatic.com/firebasejs/12.9.0/';
-  const [appSdk, authSdk, fs] = await Promise.all([
-    import(base + 'firebase-app.js'),
-    import(base + 'firebase-auth.js'),
-    import(base + 'firebase-firestore.js'),
+async function initFirebase() {
+  const [appSdk, a, f] = await Promise.all([
+    import(SDK + 'firebase-app.js'),
+    import(SDK + 'firebase-auth.js'),
+    import(SDK + 'firebase-firestore.js'),
   ]);
-  const app = appSdk.initializeApp(config);
-  const auth = authSdk.getAuth(app);
-  const db = fs.getFirestore(app);
+  const app = appSdk.initializeApp(FIREBASE);
+  fb = { a, f, auth: a.getAuth(app), db: f.getFirestore(app) };
+}
 
-  // Firebase 로그인은 이메일이 필요해서, 닉네임으로 내부용 주소를 만든다 (메일은 보내지 않음)
-  const emailOf = async (nick) => (await hash('micho:' + nick)).slice(0, 32) + '@micho.app';
-  const usePersistence = (remember) => authSdk.setPersistence(auth, remember ? authSdk.browserLocalPersistence : authSdk.browserSessionPersistence);
-  const friendly = (e) => new Error({
+const docRef = (col, id) => fb.f.doc(fb.db, col, id);
+// Firebase 로그인은 이메일이 필요해서, 닉네임으로 내부용 주소를 만든다 (메일은 보내지 않음)
+const emailOf = async (nick) => (await sha256('micho:' + nick)).slice(0, 32) + '@micho.app';
+
+function friendly(e) {
+  return {
     'auth/email-already-in-use': '이미 있는 닉네임이에요.',
     'auth/invalid-credential': '닉네임 또는 비밀번호가 맞지 않아요.',
     'auth/invalid-login-credentials': '닉네임 또는 비밀번호가 맞지 않아요.',
@@ -203,70 +144,44 @@ async function createFirebaseBackend(config) {
     'auth/weak-password': '비밀번호는 6자 이상이어야 해요.',
     'auth/too-many-requests': '시도가 너무 많아요. 잠시 후 다시 해주세요.',
     'auth/network-request-failed': '인터넷 연결을 확인해주세요.',
-    'auth/operation-not-allowed': 'Firebase에서 이메일/비밀번호 로그인이 꺼져 있어요.',
     'permission-denied': 'Firebase 보안 규칙 때문에 막혔어요.',
-  }[e.code] || '문제가 생겼어요: ' + (e.code || e.message));
+    unavailable: '인터넷 연결을 확인해주세요.',
+  }[e?.code] || '문제가 생겼어요: ' + (e?.code || e?.message || e);
+}
 
-  return {
-    name: 'firebase',
-    restore: () => new Promise((resolve) => {
-      const off = authSdk.onAuthStateChanged(auth, (u) => { off(); resolve(u ? u.uid : null); });
-    }),
-    async signUp(nick, pw, profile, remember) {
-      try {
-        await usePersistence(remember);
-        const cred = await authSdk.createUserWithEmailAndPassword(auth, await emailOf(nick), pw);
-        await fs.setDoc(fs.doc(db, 'users', cred.user.uid), { ...profile, createdAt: Date.now() });
-        return cred.user.uid;
-      } catch (e) { throw friendly(e); }
-    },
-    async signIn(nick, pw, remember) {
-      try {
-        await usePersistence(remember);
-        return (await authSdk.signInWithEmailAndPassword(auth, await emailOf(nick), pw)).user.uid;
-      } catch (e) { throw friendly(e); }
-    },
-    signOut: () => authSdk.signOut(auth),
-    async loadProfiles() {
-      const m = {};
-      (await fs.getDocs(fs.collection(db, 'users'))).forEach((d) => { m[d.id] = d.data(); });
-      return m;
-    },
-    saveProfile: (id, patch) => fs.setDoc(fs.doc(db, 'users', id), patch, { merge: true }).catch((e) => { throw friendly(e); }),
-    async loadData(id) {
-      const snap = await fs.getDoc(fs.doc(db, 'data', id));
-      return snap.exists() ? snap.data() : null;
-    },
-    saveData: (id, data) => fs.setDoc(fs.doc(db, 'data', id), data).catch((e) => { throw friendly(e); }),
-    async loadQuotes() {
-      const snap = await fs.getDocs(fs.collection(db, 'quotes'));
-      return snap.docs.map((d) => d.data()).sort((a, b) => (a.at || 0) - (b.at || 0));
-    },
-    addQuote: (q) => fs.addDoc(fs.collection(db, 'quotes'), { ...q, at: Date.now() }),
-    // 다른 기기(폰 ↔ PC)에서 바꾼 내용을 바로 반영
-    watchData: (id, onChange) => fs.onSnapshot(fs.doc(db, 'data', id), (snap) => {
-      if (!snap.metadata.hasPendingWrites && snap.exists()) onChange(snap.data());
-    }),
-  };
+async function loadProfiles() {
+  const m = {};
+  (await fb.f.getDocs(fb.f.collection(fb.db, 'users'))).forEach((d) => { m[d.id] = d.data(); });
+  return m;
+}
+async function loadData(id) {
+  const snap = await fb.f.getDoc(docRef('data', id));
+  return snap.exists() ? snap.data() : null;
+}
+async function loadQuotes() {
+  const snap = await fb.f.getDocs(fb.f.collection(fb.db, 'quotes'));
+  return snap.docs.map((d) => d.data()).sort((a, b) => (a.at || 0) - (b.at || 0));
 }
 
 // ============================================================
 // 상태
 // ============================================================
-let backend = null;
+let ready = false;     // Firebase 준비 완료
 let me = null;         // 로그인한 사용자 id
 let D = null;          // 내 공부 기록 · 할 일
 let profiles = {};     // id → { nick, goal, motto, photo }
 let quoteList = [];    // 사용자들이 등록한 명언
-let mateData = null;   // 스터디원 id → 데이터 (달력에서 켤 때 불러옴)
+let mateData = null;   // 스터디원 id → 데이터
 let unwatch = null;
+let lastRev = null;    // 내가 마지막으로 저장한 버전 (내 저장이 되돌아온 것은 무시)
 let calendar = null;
+let today = dkey();
 const ui = {
   view: 'home',
-  todoDate: dkey(),
+  todoDate: today,
   statMode: 'day',
   statMonth: monthOf(new Date()),
-  statDay: dkey(),
+  statDay: today,
   statWeek: mondayOf(new Date()),
   calDate: null,
   mates: false,
@@ -278,7 +193,7 @@ const ui = {
   fatal: '',
 };
 
-const myProfile = () => profiles[me] || { nick: '', goal: '', motto: '', photo: '' };
+const myProfile = () => profiles[me] || { nick: ui.lastNick, goal: '', motto: '', photo: '' };
 function allQuotes() {
   const seen = new Set();
   return [...SEED_QUOTES, ...quoteList].filter((q) => q?.text && !seen.has(q.text) && seen.add(q.text));
@@ -300,8 +215,18 @@ function newData() {
   };
 }
 function save() {
-  const snapshot = JSON.parse(JSON.stringify(D));
-  Promise.resolve(backend.saveData(me, snapshot)).catch((e) => toast('저장하지 못했어요. ' + e.message));
+  D.rev = lastRev = uid();
+  return fb.f.setDoc(docRef('data', me), JSON.parse(JSON.stringify(D))).catch((e) => toast('저장하지 못했어요 · ' + friendly(e)));
+}
+async function updateProfile(patch, doneMsg) {
+  profiles[me] = { ...myProfile(), ...patch };
+  render();
+  try {
+    await fb.f.setDoc(docRef('users', me), patch, { merge: true });
+    if (doneMsg) toast(doneMsg);
+  } catch (e) {
+    toast('저장하지 못했어요 · ' + friendly(e));
+  }
 }
 
 // ============================================================
@@ -312,8 +237,7 @@ function splitRange(s, e) {
   const out = [];
   while (s < e) {
     const d = new Date(s);
-    const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
-    const end = Math.min(e, next);
+    const end = Math.min(e, addDays(d, 1).getTime());
     out.push({ s, e: end, d: dkey(d) });
     s = end;
   }
@@ -327,8 +251,7 @@ function commitRunning() {
 }
 function allSessions() {
   if (!D.running) return D.sessions;
-  const live = splitRange(D.running.s, Date.now()).map((p) => ({ sid: D.running.sid, ...p }));
-  return D.sessions.concat(live);
+  return D.sessions.concat(splitRange(D.running.s, Date.now()).map((p) => ({ sid: D.running.sid, ...p })));
 }
 const sessionsOn = (key) => allSessions().filter((x) => x.d === key);
 const sumMs = (list) => list.reduce((a, x) => a + x.e - x.s, 0);
@@ -345,8 +268,7 @@ function bySubject(list) {
 
 const todosOn = (key) => D.todos[key] || [];
 function todoStats(key) {
-  const t = D.todos[key] || [];
-  const done = t.filter((x) => x.done).length;
+  const t = todosOn(key), done = t.filter((x) => x.done).length;
   return { done, total: t.length, pct: t.length ? Math.round((done / t.length) * 100) : 0 };
 }
 const isAchieved = (key) => { const s = todoStats(key); return s.total > 0 && s.done === s.total; };
@@ -361,7 +283,7 @@ function gradeInfo() {
 
 function ddayLabel() {
   if (!D.examDate) return 'D-Day';
-  const diff = Math.round((parseKey(D.examDate) - parseKey(dkey())) / DAY);
+  const diff = Math.round((parseKey(D.examDate) - parseKey(today)) / DAY);
   return diff > 0 ? `D-${diff}` : diff === 0 ? 'D-Day' : `D+${-diff}`;
 }
 
@@ -369,19 +291,23 @@ function ddayLabel() {
 // 로그인 흐름
 // ============================================================
 async function enter(id) {
-  const [p, data, q] = await Promise.all([backend.loadProfiles(), backend.loadData(id), backend.loadQuotes()]);
+  const [p, data, q] = await Promise.all([loadProfiles(), loadData(id), loadQuotes()]);
   me = id;
   profiles = p;
-  quoteList = q || [];
+  quoteList = q;
   mateData = null;
-  D = Object.assign(newData(), data || {});
+  D = Object.assign(newData(), data);
   if (!data) save();
-  if (!profiles[me]) profiles[me] = { nick: ui.lastNick || '나', goal: '', motto: '', photo: '' };
+  // 가입 중 프로필 저장이 실패했던 계정도 닉네임이 남도록
+  if (!profiles[me]) updateProfile({ nick: ui.lastNick || '나', goal: '', motto: '', photo: '' });
   unwatch?.();
-  unwatch = backend.watchData(id, (remote) => {
-    if (stable(remote) === stable(D)) return;
+  // 다른 기기(폰 ↔ PC)에서 바꾼 내용을 바로 반영
+  unwatch = fb.f.onSnapshot(docRef('data', id), (snap) => {
+    const remote = snap.data();
+    if (!remote || remote.rev === lastRev) return;
     D = Object.assign(newData(), remote);
-    if (!$('#modal').innerHTML) render();
+    const typing = document.activeElement?.matches('input, textarea');
+    if (!$('#modal').innerHTML && !typing) render();
   });
   Object.assign(ui, { authError: '', authMode: 'login', view: 'home', mates: false, paletteFor: null, quote: pickQuote() });
   render();
@@ -391,26 +317,30 @@ async function onAuth(form) {
   const f = new FormData(form);
   const nick = String(f.get('nick') || '').trim();
   const pw = String(f.get('pw') || '');
-  const remember = !!f.get('remember');
+  const signup = ui.authMode === 'signup';
   ui.lastNick = nick;
   if (!nick) return authFail('닉네임을 입력해주세요.');
   const btn = form.querySelector('[data-submit]');
   btn.disabled = true;
   btn.textContent = '잠시만요…';
   try {
-    let id;
-    if (ui.authMode === 'signup') {
+    const { a, f: fs, auth } = fb;
+    await a.setPersistence(auth, f.get('remember') ? a.browserLocalPersistence : a.browserSessionPersistence);
+    const email = await emailOf(nick);
+    let user;
+    if (signup) {
+      user = (await a.createUserWithEmailAndPassword(auth, email, pw)).user;
       const goal = String(f.get('goal') || '').trim();
       const motto = String(f.get('motto') || '').trim();
-      id = await backend.signUp(nick, pw, { nick, goal, motto, photo: '' }, remember);
+      await fs.setDoc(docRef('users', user.uid), { nick, goal, motto, photo: '', createdAt: Date.now() });
       // 첫 로그인 시 좌우명을 모두의 명언에 등록
-      if (motto) await backend.addQuote({ text: motto, by: nick, uid: id });
+      if (motto) await fs.addDoc(fs.collection(fb.db, 'quotes'), { text: motto, by: nick, uid: user.uid, at: Date.now() });
     } else {
-      id = await backend.signIn(nick, pw, remember);
+      user = (await a.signInWithEmailAndPassword(auth, email, pw)).user;
     }
-    await enter(id);
+    await enter(user.uid);
   } catch (e) {
-    authFail(e.message);
+    authFail(friendly(e));
   }
 }
 function authFail(msg) { ui.authError = msg; render(); }
@@ -418,12 +348,11 @@ function authFail(msg) { ui.authError = msg; render(); }
 async function logout() {
   if (!confirm('로그아웃할까요?')) return;
   commitRunning();
-  try { await backend.saveData(me, JSON.parse(JSON.stringify(D))); } catch {}
+  await save();
   unwatch?.();
   unwatch = null;
-  await backend.signOut();
-  me = null;
-  D = null;
+  await fb.a.signOut(fb.auth);
+  me = D = null;
   profiles = {};
   ui.lastNick = '';
   render();
@@ -435,17 +364,23 @@ async function logout() {
 function render() {
   if (calendar) { ui.calDate = calendar.getDate(); calendar.destroy(); calendar = null; }
   const app = $('#app');
-  if (ui.fatal) { app.innerHTML = fatalView(); return; }
-  if (!backend) { app.innerHTML = loadingView(); return; }
-  if (!me) { app.innerHTML = loginView(); return; }
-  const views = { home: homeView, todo: todoView, calendar: calendarView, stats: statsView, me: profileView };
-  app.innerHTML = views[ui.view]() + navView();
-  if (ui.view === 'calendar') mountCalendar();
-  updateLive();
+  if (ui.fatal) app.innerHTML = fatalView();
+  else if (!ready) app.innerHTML = loadingView();
+  else if (!me) app.innerHTML = loginView();
+  else {
+    const views = { home: homeView, todo: todoView, calendar: calendarView, stats: statsView, me: profileView };
+    app.innerHTML = `
+      ${navView()}
+      <main class="md:pl-64">
+        <div class="mx-auto max-w-6xl px-4 md:px-8 pt-5 md:pt-8 pb-32 md:pb-12">${views[ui.view]()}</div>
+      </main>`;
+    if (ui.view === 'calendar') mountCalendar();
+    updateLive();
+  }
 }
 
 function go(view) {
-  if (view === 'todo') ui.todoDate = dkey();
+  if (view === 'todo') ui.todoDate = today;
   ui.view = view;
   render();
   window.scrollTo(0, 0);
@@ -457,98 +392,138 @@ function openTodo(key) {
   window.scrollTo(0, 0);
 }
 
-function avatar(p, size, icon) {
-  const photo = safePhoto(p?.photo);
-  return photo
-    ? `<img src="${esc(photo)}" alt="" class="${size} rounded-full object-cover">`
-    : `<div class="${size} rounded-full bg-white/20 grid place-items-center ${icon}"><i class="fa-solid fa-compass-drafting"></i></div>`;
+const pageTitle = (title, right = '') => `
+  <div class="mb-5 flex items-center justify-between gap-3">
+    <h1 class="text-2xl md:text-3xl font-bold tracking-tight">${title}</h1>${right}
+  </div>`;
+
+function avatar(p, size) {
+  return p?.photo
+    ? `<img src="${esc(p.photo)}" alt="" class="${size} rounded-full object-cover shrink-0">`
+    : `<div class="${size} btn rounded-full grid place-items-center font-bold shrink-0">${esc((p?.nick || '?')[0])}</div>`;
 }
 
 const loadingView = () => `
-  <div class="min-h-screen grid place-items-center text-brand">
-    <i class="fa-solid fa-spinner fa-spin text-3xl"></i>
-  </div>`;
+  <div class="min-h-screen grid place-items-center text-brand"><i class="fa-solid fa-spinner fa-spin text-3xl"></i></div>`;
 
 const fatalView = () => `
-  <div class="min-h-screen grid place-items-center px-8 text-center">
-    <div>
+  <div class="min-h-screen grid place-items-center px-6">
+    <div class="glass rounded-[2rem] p-8 max-w-sm text-center">
       <i class="fa-solid fa-triangle-exclamation text-3xl text-brand"></i>
       <p class="mt-4 font-semibold">서버에 연결하지 못했어요</p>
-      <p class="mt-2 text-sm text-gray-500">${esc(ui.fatal)}</p>
-      <button onclick="location.reload()" class="mt-6 px-5 py-2.5 rounded-xl bg-brand text-white font-semibold">다시 시도</button>
+      <p class="mt-2 text-sm text-gray-600">${esc(ui.fatal)}</p>
+      <button onclick="location.reload()" class="btn mt-6 px-5 py-2.5 rounded-2xl font-semibold">다시 시도</button>
     </div>
   </div>`;
+
+// ---------- 하단 탭 (모바일) · 사이드바 (아이패드 · 데스크탑) ----------
+function navView() {
+  const u = myProfile();
+  const item = ([v, icon, label]) => {
+    const on = ui.view === v;
+    const photo = v === 'me' && u.photo;
+    return `
+      <button data-action="go" data-view="${v}" class="flex-1 md:flex-none flex flex-col md:flex-row items-center gap-0.5 md:gap-3 py-2 md:py-3 md:px-4 rounded-full md:rounded-2xl transition ${on ? 'bg-white/85 text-brand-dark shadow-sm' : 'text-gray-500 hover:bg-white/40'}">
+        ${photo ? `<img src="${esc(u.photo)}" alt="" class="w-5 h-5 rounded-full object-cover">` : `<i class="fa-solid ${icon} text-lg md:w-5"></i>`}
+        <span class="text-[11px] md:text-[15px] font-medium">${label}</span>
+      </button>`;
+  };
+  return `
+  <nav class="nav fixed z-30 inset-x-4 md:inset-x-auto md:left-4 md:top-4 md:w-56">
+    <div class="glass rounded-full md:rounded-[1.75rem] p-1.5 md:p-3 flex md:flex-col gap-1 md:h-full">
+      <div class="hidden md:flex items-center gap-2.5 px-3 pt-2 pb-5">
+        <div class="btn w-9 h-9 rounded-xl grid place-items-center"><i class="fa-solid fa-compass-drafting"></i></div>
+        <span class="text-lg font-bold">micho</span>
+      </div>
+      ${NAV.map(item).join('')}
+      <div class="hidden md:flex mt-auto items-center gap-3 p-2">
+        ${avatar(u, 'w-10 h-10')}
+        <div class="min-w-0">
+          <div class="font-semibold truncate">${esc(u.nick)}</div>
+          <div class="text-xs text-brand-dark">${gradeInfo().grade.name}</div>
+        </div>
+      </div>
+    </div>
+  </nav>`;
+}
 
 // ---------- 로그인 ----------
 function loginView() {
   const signup = ui.authMode === 'signup';
-  const tab = (m, l) => `<button type="button" data-action="authmode" data-mode="${m}" class="flex-1 py-2.5 rounded-xl text-sm font-semibold ${ui.authMode === m ? 'bg-white shadow text-gray-900' : 'text-gray-500'}">${l}</button>`;
+  const tab = (m, l) => `<button type="button" data-action="authmode" data-mode="${m}" class="flex-1 py-2.5 rounded-xl text-sm font-semibold transition ${ui.authMode === m ? 'bg-white shadow-sm' : 'text-gray-500'}">${l}</button>`;
   const field = (name, label, type, ph, extra = '') => `
     <label class="block">
       <span class="text-sm font-medium text-gray-600">${label}</span>
-      <input name="${name}" type="${type}" placeholder="${ph}" ${extra} class="mt-1.5 w-full px-4 py-3 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
+      <input name="${name}" type="${type}" placeholder="${ph}" ${extra} class="mt-1.5 ${INPUT}">
     </label>`;
-  const shared = backend.name === 'firebase';
   return `
-  <div class="min-h-screen flex flex-col">
-    <div class="bg-brand text-white px-6 pt-16 pb-12">
-      <div class="w-14 h-14 rounded-2xl bg-white/20 grid place-items-center text-2xl"><i class="fa-solid fa-compass-drafting"></i></div>
-      <h1 class="mt-5 text-3xl font-bold leading-tight">건축사 시험<br>스터디 플래너</h1>
-      <p class="mt-2 text-white/80">매일의 공부 시간을 기록하고 합격까지 달려가요</p>
+  <div class="min-h-screen grid place-items-center px-4 py-10">
+    <div class="w-full max-w-md">
+      <div class="text-center mb-7">
+        <div class="btn mx-auto w-16 h-16 rounded-3xl grid place-items-center text-2xl"><i class="fa-solid fa-compass-drafting"></i></div>
+        <h1 class="mt-5 text-3xl font-bold tracking-tight">건축사 시험 스터디 플래너</h1>
+        <p class="mt-2 text-gray-600">매일의 공부 시간을 기록하고 합격까지 함께 달려요</p>
+      </div>
+      <form data-form="auth" class="glass rounded-[2rem] p-6 md:p-8 space-y-4">
+        <div class="flex p-1 rounded-2xl bg-white/40">${tab('login', '로그인')}${tab('signup', '처음이에요')}</div>
+        ${field('nick', '닉네임', 'text', '닉네임', `required maxlength="20" autocomplete="username" value="${esc(ui.lastNick)}"`)}
+        ${field('pw', '비밀번호', 'password', signup ? '6자 이상' : '비밀번호', `required ${signup ? 'minlength="6"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
+        ${signup ? field('goal', '시험 전 나의 목표', 'text', '예) 올해 3과목 모두 합격!', 'maxlength="60"') + field('motto', '나의 명언 / 좌우명', 'text', '예) 오늘 걷지 않으면 내일은 뛰어야 한다', 'maxlength="80"') : ''}
+        <label class="flex items-center gap-2 text-sm text-gray-600">
+          <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#1F9D66]">계정 기억하기
+        </label>
+        ${ui.authError ? `<p class="text-sm text-red-500">${esc(ui.authError)}</p>` : ''}
+        <button data-submit class="btn w-full py-3.5 rounded-2xl font-semibold text-lg">${signup ? '시작하기' : '로그인'}</button>
+      </form>
     </div>
-    <form data-form="auth" class="flex-1 px-6 py-8 space-y-4">
-      <div class="flex p-1 rounded-2xl bg-gray-100">${tab('login', '로그인')}${tab('signup', '처음이에요')}</div>
-      ${field('nick', '닉네임', 'text', '닉네임', `required maxlength="20" autocomplete="username" value="${esc(ui.lastNick)}"`)}
-      ${field('pw', '비밀번호', 'password', signup ? '6자 이상' : '비밀번호', `required ${signup ? 'minlength="6"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
-      ${signup ? field('goal', '시험 전 나의 목표', 'text', '예) 올해 3과목 모두 합격!', 'maxlength="60"') + field('motto', '나의 명언 / 좌우명', 'text', '예) 오늘 걷지 않으면 내일은 뛰어야 한다', 'maxlength="80"') : ''}
-      <label class="flex items-center gap-2 text-sm text-gray-600">
-        <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#2E9E6B]">계정 기억하기
-      </label>
-      ${ui.authError ? `<p class="text-sm text-red-500">${esc(ui.authError)}</p>` : ''}
-      <button data-submit class="w-full py-3.5 rounded-xl bg-brand text-white font-semibold text-lg disabled:opacity-60">${signup ? '시작하기' : '로그인'}</button>
-      <p class="text-xs text-gray-400 text-center leading-relaxed">${shared ? '스터디원들과 기록이 공유돼요.' : '계정과 기록은 이 기기의 브라우저에만 저장돼요.'}</p>
-    </form>
   </div>`;
 }
 
 // ---------- 홈 (타이머) ----------
 function homeView() {
-  const today = new Date(), ts = todoStats(dkey(today)), q = ui.quote;
+  const ts = todoStats(today), q = ui.quote;
   return `
-  <header class="bg-brand text-white px-5 pt-6 pb-7">
-    <div class="flex items-center justify-between">
-      <button data-action="dday" class="px-3 py-1.5 rounded-full bg-black/10 text-sm font-medium">${ddayLabel()}</button>
-      <div class="text-lg font-medium">${fmtDate(today)}</div>
-      <button data-action="subjects" class="w-9 h-9 grid place-items-center text-xl" aria-label="과목 편집"><i class="fa-solid fa-table-cells-large"></i></button>
-    </div>
-    <div class="mt-8 text-center text-6xl font-semibold tabular-nums tracking-tight" data-live="total">0:00:00</div>
-    <div class="mt-3 text-center text-sm text-white/75" data-live="current"></div>
-    ${q ? `<button data-action="quote" class="mt-5 block w-full text-center text-sm text-white/90 leading-relaxed">“${esc(q.text)}”${q.by ? `<span class="text-white/60"> · ${esc(q.by)}</span>` : ''}</button>` : ''}
-  </header>
-  <main class="px-5 pb-36">
-    <button data-action="go" data-view="todo" class="w-full mt-5 p-4 rounded-2xl bg-gray-50 text-left">
-      <div class="flex justify-between text-sm">
-        <span class="font-semibold">오늘의 할 일</span>
-        <span class="text-gray-500">${ts.done}/${ts.total} · <b class="text-brand">${ts.pct}%</b></span>
+  <div class="grid gap-4 lg:gap-6 lg:grid-cols-5">
+    <section class="glass-hero rounded-[2rem] p-6 md:p-8 lg:col-span-3 flex flex-col lg:min-h-[440px]">
+      <div class="flex items-center justify-between">
+        <button data-action="dday" class="chip px-3.5 py-1.5 rounded-full text-sm font-semibold">${ddayLabel()}</button>
+        <div class="text-lg font-medium">${fmtDate(new Date())}</div>
+        <button data-action="subjects" class="chip w-10 h-10 rounded-full grid place-items-center" aria-label="과목 편집"><i class="fa-solid fa-palette"></i></button>
       </div>
-      <div class="mt-2 h-2 rounded-full bg-gray-200 overflow-hidden"><div class="h-full bg-brand rounded-full transition-all" style="width:${ts.pct}%"></div></div>
-    </button>
-    <ul class="mt-2">${D.subjects.map(subjectRow).join('')}</ul>
-    ${D.subjects.length ? '' : '<p class="py-10 text-center text-gray-400">과목을 추가해주세요</p>'}
-    <button data-action="subjects" class="mt-4 px-4 py-2.5 rounded-xl bg-gray-100 text-gray-600"><i class="fa-solid fa-pen mr-1.5"></i>과목 편집</button>
-  </main>`;
+      <div class="flex-1 flex flex-col justify-center py-10 text-center">
+        <div class="text-sm text-white/80">오늘 공부한 시간</div>
+        <div class="mt-1 text-6xl md:text-7xl font-semibold tabular-nums tracking-tight" data-live="total">0:00:00</div>
+        <div class="mt-3 text-sm text-white/85" data-live="current"></div>
+      </div>
+      ${q ? `<button data-action="quote" class="chip rounded-2xl px-4 py-3 text-sm leading-relaxed">“${esc(q.text)}”${q.by ? `<span class="text-white/70"> · ${esc(q.by)}</span>` : ''}</button>` : ''}
+    </section>
+    <div class="lg:col-span-2 space-y-4">
+      <button data-action="go" data-view="todo" class="glass w-full rounded-3xl p-5 text-left">
+        <div class="flex justify-between text-sm">
+          <span class="font-semibold">오늘의 할 일</span>
+          <span class="text-gray-500">${ts.done}/${ts.total} · <b class="text-brand">${ts.pct}%</b></span>
+        </div>
+        <div class="mt-3 h-2.5 rounded-full bg-white/70 overflow-hidden"><div class="btn h-full rounded-full transition-all" style="width:${ts.pct}%"></div></div>
+      </button>
+      <section class="glass rounded-3xl p-2">
+        <ul>${D.subjects.map(subjectRow).join('')}</ul>
+        ${D.subjects.length ? '' : '<p class="py-8 text-center text-gray-500">과목을 추가해주세요</p>'}
+        <button data-action="subjects" class="w-full mt-1 py-3 rounded-2xl text-sm text-gray-600 hover:bg-white/50"><i class="fa-solid fa-pen mr-1.5"></i>과목 편집</button>
+      </section>
+    </div>
+  </div>`;
 }
 
 function subjectRow(s) {
   const on = D.running?.sid === s.id;
   return `
-  <li class="flex items-center gap-4 py-3.5 ${on ? '-mx-3 px-3 rounded-2xl bg-brand-soft' : ''}">
-    <button data-action="toggle" data-id="${s.id}" class="w-12 h-12 shrink-0 rounded-full grid place-items-center text-white text-lg shadow-sm" style="background:${safeColor(s.color)}" aria-label="${on ? '일시정지' : '시작'}">
+  <li class="flex items-center gap-4 p-3 rounded-2xl transition ${on ? 'bg-white/75 shadow-sm' : ''}">
+    <button data-action="toggle" data-id="${s.id}" class="orb ${on ? 'on' : ''} w-12 h-12 shrink-0 rounded-full grid place-items-center text-white text-lg" style="background-color:${s.color};--c:${s.color}" aria-label="${on ? '일시정지' : '시작'}">
       <i class="fa-solid ${on ? 'fa-pause' : 'fa-play ml-0.5'}"></i>
     </button>
     <span class="flex-1 text-lg font-medium truncate">${esc(s.name)}</span>
     <span class="text-lg tabular-nums" data-live="sub" data-id="${s.id}">0:00:00</span>
-    <button data-action="subjects" data-id="${s.id}" class="w-6 text-gray-400" aria-label="과목 편집 · 색 바꾸기"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+    <button data-action="subjects" data-id="${s.id}" class="w-7 text-gray-400" aria-label="과목 편집 · 색 바꾸기"><i class="fa-solid fa-ellipsis-vertical"></i></button>
   </li>`;
 }
 
@@ -562,86 +537,89 @@ function toggleSubject(id) {
 
 function updateLive() {
   if (!me || !D) return;
-  const today = sessionsOn(dkey());
+  // 자정이 지나면 '오늘' 기준을 새 날짜로 바꾼다
+  if (dkey() !== today) {
+    if (ui.todoDate === today) ui.todoDate = dkey();
+    if (ui.statDay === today) ui.statDay = dkey();
+    today = dkey();
+    render();
+    return;
+  }
+  const list = sessionsOn(today);
   document.querySelectorAll('[data-live]').forEach((el) => {
     const t = el.dataset.live;
-    if (t === 'total') el.textContent = fmtHMS(sumMs(today));
-    else if (t === 'sub') el.textContent = fmtHMS(sumMs(today.filter((x) => x.sid === el.dataset.id)));
+    if (t === 'total') el.textContent = fmtHMS(sumMs(list));
+    else if (t === 'sub') el.textContent = fmtHMS(sumMs(list.filter((x) => x.sid === el.dataset.id)));
     else if (t === 'current') {
-      if (D.running) {
-        const s = D.subjects.find((x) => x.id === D.running.sid);
-        el.textContent = `${s ? s.name : ''} 집중 중 · ${fmtKo(Date.now() - D.running.s)}`;
-      } else el.textContent = '과목의 ▶ 버튼을 눌러 공부를 시작하세요';
+      const s = D.running && D.subjects.find((x) => x.id === D.running.sid);
+      el.textContent = D.running ? `${s ? s.name : ''} 집중 중 · ${fmtKo(Date.now() - D.running.s)}` : '과목의 ▶ 버튼을 눌러 공부를 시작하세요';
     }
   });
-  document.title = D.running ? `${fmtHMS(sumMs(today))} · micho` : 'micho 스터디 플래너';
+  document.title = D.running ? `${fmtHMS(sumMs(list))} · micho` : 'micho 스터디 플래너';
 }
 
 // ---------- 할 일 ----------
 function todoView() {
-  const key = ui.todoDate, list = todosOn(key), s = todoStats(key), isToday = key === dkey();
+  const key = ui.todoDate, list = todosOn(key), s = todoStats(key);
+  const arrow = (delta, icon, label) => `<button data-action="tododay" data-delta="${delta}" class="glass w-11 h-11 rounded-full grid place-items-center text-gray-600" aria-label="${label}"><i class="fa-solid ${icon}"></i></button>`;
   return `
-  <header class="px-5 pt-6 pb-4 flex items-center justify-between">
-    <button data-action="tododay" data-delta="-1" class="w-10 h-10 grid place-items-center text-gray-500" aria-label="이전 날"><i class="fa-solid fa-chevron-left"></i></button>
-    <div class="text-center">
-      <div class="text-lg font-bold">${fmtDateKo(parseKey(key))}</div>
-      ${isToday ? '<div class="text-xs text-brand font-medium">오늘</div>' : '<button data-action="todotoday" class="text-xs text-gray-400 underline">오늘로</button>'}
-    </div>
-    <button data-action="tododay" data-delta="1" class="w-10 h-10 grid place-items-center text-gray-500" aria-label="다음 날"><i class="fa-solid fa-chevron-right"></i></button>
-  </header>
-  <main class="px-5 pb-36">
-    <section class="p-5 rounded-3xl bg-brand text-white">
-      <div class="flex items-end justify-between">
-        <div><div class="text-sm text-white/80">달성률</div><div class="text-4xl font-bold tabular-nums">${s.pct}%</div></div>
-        <div class="text-sm text-white/80">${s.done} / ${s.total} 완료</div>
+  <div class="mx-auto max-w-2xl">
+    <div class="mb-5 flex items-center justify-between">
+      ${arrow(-1, 'fa-chevron-left', '이전 날')}
+      <div class="text-center">
+        <div class="text-xl md:text-2xl font-bold">${fmtDateKo(parseKey(key))}</div>
+        ${key === today ? '<div class="text-xs text-brand font-semibold">오늘</div>' : '<button data-action="todotoday" class="text-xs text-gray-500 underline">오늘로</button>'}
       </div>
-      <div class="mt-4 h-2.5 rounded-full bg-white/30 overflow-hidden"><div class="h-full rounded-full bg-white transition-all duration-500" style="width:${s.pct}%"></div></div>
+      ${arrow(1, 'fa-chevron-right', '다음 날')}
+    </div>
+    <section class="glass-hero rounded-[2rem] p-6">
+      <div class="flex items-end justify-between">
+        <div><div class="text-sm text-white/80">달성률</div><div class="text-5xl font-bold tabular-nums">${s.pct}%</div></div>
+        <div class="text-sm text-white/85">${s.done} / ${s.total} 완료</div>
+      </div>
+      <div class="mt-5 h-3 rounded-full bg-white/25 overflow-hidden"><div class="h-full rounded-full bg-white transition-all duration-500" style="width:${s.pct}%"></div></div>
     </section>
-    <form data-form="todoadd" class="mt-5 flex gap-2">
-      <input name="text" required maxlength="100" autocomplete="off" placeholder="할 일을 입력하세요" class="flex-1 min-w-0 px-4 py-3 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
-      <button class="px-4 rounded-xl bg-gray-900 text-white" aria-label="추가"><i class="fa-solid fa-plus"></i></button>
+    <form data-form="todoadd" class="mt-4 flex gap-2">
+      <input name="text" required maxlength="100" autocomplete="off" placeholder="할 일을 입력하세요" class="${INPUT} flex-1 min-w-0">
+      <button class="btn px-5 rounded-2xl" aria-label="추가"><i class="fa-solid fa-plus"></i></button>
     </form>
-    <ul class="mt-4 divide-y divide-gray-100">${list.map((t) => `
-      <li class="flex items-center gap-3 py-3.5">
-        <button data-action="todotoggle" data-id="${t.id}" class="w-6 h-6 shrink-0 rounded-md border-2 grid place-items-center ${t.done ? 'bg-brand border-brand text-white' : 'border-gray-300'}" aria-label="완료 체크">${t.done ? '<i class="fa-solid fa-check text-xs"></i>' : ''}</button>
-        <span class="flex-1 break-all ${t.done ? 'line-through text-gray-400' : ''}">${esc(t.text)}</span>
-        <button data-action="tododel" data-id="${t.id}" class="w-6 text-gray-300 hover:text-red-400" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
-      </li>`).join('')}
-    </ul>
-    ${list.length ? '' : '<p class="py-12 text-center text-gray-400">아직 할 일이 없어요</p>'}
-  </main>`;
+    <section class="glass rounded-3xl mt-4 px-4 ${list.length ? '' : 'hidden'}">
+      <ul class="divide-y divide-white/70">${list.map((t) => `
+        <li class="flex items-center gap-3 py-4">
+          <button data-action="todotoggle" data-id="${t.id}" class="w-6 h-6 shrink-0 rounded-lg border-2 grid place-items-center ${t.done ? 'btn border-transparent' : 'border-gray-300 bg-white/60'}" aria-label="완료 체크">${t.done ? '<i class="fa-solid fa-check text-xs"></i>' : ''}</button>
+          <span class="flex-1 break-all ${t.done ? 'line-through text-gray-400' : ''}">${esc(t.text)}</span>
+          <button data-action="tododel" data-id="${t.id}" class="w-7 text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
+        </li>`).join('')}
+      </ul>
+    </section>
+    ${list.length ? '' : '<p class="py-12 text-center text-gray-500">아직 할 일이 없어요</p>'}
+  </div>`;
 }
 
 // ---------- 달력 ----------
 function calendarView() {
+  const toggle = `
+    <label class="glass flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium cursor-pointer">
+      <input type="checkbox" data-action="mates" ${ui.mates ? 'checked' : ''} class="w-4 h-4 accent-[#1F9D66]">스터디원 체크리스트
+    </label>`;
   return `
-  <header class="px-5 pt-6 pb-2 flex items-center justify-between">
-    <h1 class="text-xl font-bold">달력</h1>
-    <label class="flex items-center gap-2 text-sm text-gray-600">
-      <input type="checkbox" data-action="mates" ${ui.mates ? 'checked' : ''} class="w-4 h-4 accent-[#2E9E6B]">스터디원 체크리스트
-    </label>
-  </header>
-  <main class="px-3 pb-36">
-    <div id="fc"></div>
-    <p class="mt-4 px-2 text-xs text-gray-400 leading-relaxed">
-      날짜를 누르면 그날의 할 일로 이동해요.
-      ${ui.mates && backend.name === 'local' ? '<br>지금은 Firebase가 연결되지 않아 이 기기에 가입한 계정끼리만 보여요.' : ''}
-    </p>
-  </main>`;
+    ${pageTitle('달력', toggle)}
+    <section class="glass rounded-3xl p-3 md:p-6"><div id="fc"></div></section>
+    <p class="mt-4 px-2 text-sm text-gray-500">날짜를 누르면 그날의 할 일로 이동해요.</p>`;
 }
 
 function mountCalendar() {
   const events = [];
   for (const [d, ms] of Object.entries(totalsByDay())) {
-    if (ms >= 60000) events.push({ title: '⏱ ' + fmtHM(ms), start: d, allDay: true, color: '#1F2937', order: 0 });
+    if (ms >= 60000) events.push({ title: '⏱ ' + fmtHM(ms), start: d, color: '#12724A', order: 0 });
   }
   const addTodos = (todos, who, color) => {
     for (const [d, list] of Object.entries(todos || {})) {
       for (const t of list || []) {
         events.push({
           title: (who ? `[${who}] ` : '') + (t.done ? '✓ ' : '') + t.text,
-          start: d, allDay: true, order: who ? 2 : 1,
-          color: t.done ? '#E5E7EB' : color,
+          start: d, order: who ? 2 : 1,
+          color: t.done ? 'rgba(255,255,255,.8)' : color,
           textColor: t.done ? '#6B7280' : '#fff',
         });
       }
@@ -649,10 +627,9 @@ function mountCalendar() {
   };
   addTodos(D.todos, '', BRAND);
   if (ui.mates && mateData) {
-    for (const [id, data] of Object.entries(mateData)) addTodos(data?.todos, profiles[id]?.nick || '스터디원', MATE_COLOR);
+    for (const [id, data] of Object.entries(mateData)) addTodos(data.todos, profiles[id]?.nick || '스터디원', MATE_COLOR);
   }
-
-  calendar = new FullCalendar.Calendar(document.getElementById('fc'), {
+  calendar = new FullCalendar.Calendar($('#fc'), {
     initialView: 'dayGridMonth',
     initialDate: ui.calDate || undefined,
     locale: 'ko',
@@ -668,48 +645,46 @@ function mountCalendar() {
     eventClick: (info) => openTodo(info.event.startStr.slice(0, 10)),
   });
   calendar.render();
+  // 사이드바 · 화면 회전 등으로 영역 크기가 바뀌면 달력 너비를 다시 맞춘다
+  new ResizeObserver(() => calendar?.updateSize()).observe($('#fc'));
 }
 
+// 켤 때마다 새로 불러와서 스터디원의 최신 체크리스트를 보여준다
 async function loadMates() {
-  profiles = { ...(await backend.loadProfiles()), [me]: myProfile() };
+  profiles = { ...(await loadProfiles()), [me]: myProfile() };
   const ids = Object.keys(profiles).filter((id) => id !== me);
-  const list = await Promise.all(ids.map((id) => backend.loadData(id).catch(() => null)));
-  mateData = {};
-  ids.forEach((id, i) => { mateData[id] = list[i] || {}; });
+  const list = await Promise.all(ids.map(loadData));
+  mateData = Object.fromEntries(ids.map((id, i) => [id, list[i] || {}]));
 }
 
 // ---------- 통계 ----------
+const CARD = 'glass rounded-3xl p-5 md:p-6';
 const summ = (label, value) => `<div><div class="text-xs text-gray-500">${label}</div><div class="mt-1 text-lg font-bold tabular-nums">${value}</div></div>`;
 
 function statsView() {
-  const chips = [['day', '일간'], ['week', '주간'], ['month', '월간']].map(([k, l]) => `
-    <button data-action="statmode" data-mode="${k}" class="px-5 py-2 rounded-full border ${ui.statMode === k ? 'bg-brand border-brand text-white font-semibold' : 'bg-white border-gray-200 text-gray-600'}">${l}</button>`).join('');
+  const tabs = [['day', '일간'], ['week', '주간'], ['month', '월간']].map(([k, l]) => `
+    <button data-action="statmode" data-mode="${k}" class="px-5 py-2 rounded-full text-sm font-semibold transition ${ui.statMode === k ? 'btn' : 'text-gray-600'}">${l}</button>`).join('');
   const totals = totalsByDay();
-  const body = ui.statMode === 'week'
+  const [left, right] = ui.statMode === 'week'
     ? weekStats(totals)
-    : monthGrid(totals) + (ui.statMode === 'day' ? dayStats() : monthStats(totals));
+    : [monthGrid(totals), ui.statMode === 'day' ? dayStats() : monthStats(totals)];
   return `
-  <div class="bg-gray-100 min-h-screen">
-    <header class="px-5 pt-6 pb-3">
-      <h1 class="text-xl font-bold text-center">통계</h1>
-      <div class="mt-4 flex gap-2">${chips}</div>
-    </header>
-    <main class="px-4 pb-36 space-y-3">${body}</main>
-  </div>`;
+    ${pageTitle('통계', `<div class="glass rounded-full p-1 flex">${tabs}</div>`)}
+    <div class="grid gap-4 lg:gap-6 lg:grid-cols-2 lg:items-start">
+      <div>${left}</div>
+      <div class="space-y-4">${right}</div>
+    </div>`;
 }
 
 function levelOf(ms) {
   if (!ms || ms < 60000) return null;
-  const h = ms / 3600000;
-  return LEVELS.find(([min]) => h >= min);
+  return LEVELS.find(([min]) => ms / 3600000 >= min);
 }
 
 function monthGrid(totals) {
   const m = ui.statMonth, y = m.getFullYear(), mo = m.getMonth();
   const first = new Date(y, mo, 1), start = mondayOf(first);
-  const days = new Date(y, mo + 1, 0).getDate();
-  const weeks = Math.ceil((((first.getDay() + 6) % 7) + days) / 7);
-  const today = dkey();
+  const weeks = Math.ceil((((first.getDay() + 6) % 7) + new Date(y, mo + 1, 0).getDate()) / 7);
   let cells = '', monthMs = 0;
   for (let i = 0; i < weeks * 7; i++) {
     const d = addDays(start, i), k = dkey(d), inMonth = d.getMonth() === mo, ms = totals[k] || 0;
@@ -717,45 +692,44 @@ function monthGrid(totals) {
     const lv = inMonth ? levelOf(ms) : null;
     const selected = ui.statMode === 'day' && k === ui.statDay;
     cells += `
-      <button data-action="statday" data-key="${k}" class="h-14 rounded-lg flex flex-col items-center pt-1.5 gap-0.5 ${selected ? 'ring-2 ring-gray-700' : ''}" style="${lv ? `background:${lv[1]};color:${lv[2]}` : ''}">
-        <span class="text-sm w-7 h-6 grid place-items-center rounded-md ${k === today ? 'bg-gray-900 text-white' : ''} ${inMonth ? '' : 'text-gray-300'}">${d.getDate()}</span>
+      <button data-action="statday" data-key="${k}" class="h-14 md:h-16 rounded-xl flex flex-col items-center pt-1.5 gap-0.5 transition hover:bg-white/60 ${selected ? 'ring-2 ring-brand-dark' : ''}" style="${lv ? `background:${lv[1]};color:${lv[2]}` : ''}">
+        <span class="text-sm w-7 h-6 grid place-items-center rounded-lg ${k === today ? 'bg-gray-900 text-white' : ''} ${inMonth ? '' : 'text-gray-300'}">${d.getDate()}</span>
         ${lv ? `<span class="text-[11px] tabular-nums">${fmtHM(ms)}</span>` : ''}
       </button>`;
   }
   const legend = [...LEVELS].reverse().map(([h, bg, fg]) => `<span class="px-1.5 py-0.5" style="background:${bg};color:${fg}">${h}+</span>`).join('');
   return `
-  <section class="bg-white rounded-2xl p-4">
+  <section class="${CARD}">
     <div class="flex items-center gap-4 px-1">
-      <button data-action="statmonth" data-delta="-1" class="w-6 text-gray-400" aria-label="이전 달"><i class="fa-solid fa-caret-left"></i></button>
+      <button data-action="statmonth" data-delta="-1" class="w-7 text-gray-500" aria-label="이전 달"><i class="fa-solid fa-caret-left"></i></button>
       <span class="text-xl font-bold">${y === new Date().getFullYear() ? '' : y + '년 '}${mo + 1}월</span>
-      <button data-action="statmonth" data-delta="1" class="w-6 text-gray-400" aria-label="다음 달"><i class="fa-solid fa-caret-right"></i></button>
+      <button data-action="statmonth" data-delta="1" class="w-7 text-gray-500" aria-label="다음 달"><i class="fa-solid fa-caret-right"></i></button>
     </div>
-    <div class="mt-3 grid grid-cols-7 text-center text-sm text-gray-400">${['월', '화', '수', '목', '금', '토', '일'].map((w) => `<span>${w}</span>`).join('')}</div>
+    <div class="mt-3 grid grid-cols-7 text-center text-sm text-gray-500">${['월', '화', '수', '목', '금', '토', '일'].map((w) => `<span>${w}</span>`).join('')}</div>
     <div class="mt-1 grid grid-cols-7 gap-1">${cells}</div>
-    <div class="mt-3 flex items-center justify-between text-xs">
-      <div class="flex rounded overflow-hidden">${legend}</div>
-      <span class="text-gray-500">${mo + 1}월: ${fmtHM(monthMs)}</span>
+    <div class="mt-4 flex items-center justify-between text-xs">
+      <div class="flex rounded-md overflow-hidden">${legend}</div>
+      <span class="text-gray-600">${mo + 1}월: ${fmtHM(monthMs)}</span>
     </div>
   </section>`;
 }
 
 function dayStats() {
-  const k = ui.statDay, list = sessionsOn(k), total = sumMs(list), ts = todoStats(k);
+  const k = ui.statDay, list = sessionsOn(k), ts = todoStats(k);
   const max = list.reduce((a, x) => Math.max(a, x.e - x.s), 0);
   const start = list.length ? Math.min(...list.map((x) => x.s)) : null;
   const end = list.length ? Math.max(...list.map((x) => x.e)) : null;
-  const running = D.running && k === dkey();
-  const cell = (label, value) => `<div><div class="text-brand font-semibold">${label}</div><div class="mt-1 text-2xl font-medium tabular-nums">${value}</div></div>`;
+  const cell = (label, value) => `<div><div class="text-brand font-semibold text-sm">${label}</div><div class="mt-1 text-2xl font-semibold tabular-nums">${value}</div></div>`;
   return `
-  <section class="bg-white rounded-2xl p-5">
+  <section class="${CARD}">
     <h2 class="text-center text-lg font-semibold">${fmtDateKo(parseKey(k))}</h2>
     <div class="mt-5 grid grid-cols-2 gap-y-6 text-center">
-      ${cell('총 공부 시간', fmtHMS(total))}
+      ${cell('총 공부 시간', fmtHMS(sumMs(list)))}
       ${cell('최대 집중 시간', fmtHMS(max))}
       ${cell('시작시간', start ? fmtClock(start) : '-')}
-      ${cell('종료시간', end ? (running ? '진행 중' : fmtClock(end)) : '-')}
+      ${cell('종료시간', end ? (D.running && k === today ? '진행 중' : fmtClock(end)) : '-')}
     </div>
-    <div class="mt-6 pt-5 border-t border-gray-100 flex justify-between text-sm">
+    <div class="mt-6 pt-5 border-t border-white/80 flex justify-between text-sm">
       <span class="text-gray-500">할 일 달성률</span>
       <span class="font-semibold">${ts.done}/${ts.total} · ${ts.pct}%</span>
     </div>
@@ -764,33 +738,32 @@ function dayStats() {
 }
 
 function weekStats(totals) {
-  const ws = ui.statWeek, days = [...Array(7)].map((_, i) => addDays(ws, i)), today = dkey();
+  const ws = ui.statWeek, days = [...Array(7)].map((_, i) => addDays(ws, i));
   const vals = days.map((d) => totals[dkey(d)] || 0);
   const sum = vals.reduce((a, b) => a + b, 0), max = Math.max(3600000, ...vals);
-  const att = vals.filter((v) => v >= 60000).length;
   const keys = new Set(days.map(dkey));
-  const list = allSessions().filter((x) => keys.has(x.d));
   const bars = days.map((d, i) => {
-    const k = dkey(d), h = Math.round((vals[i] / max) * 100);
+    const k = dkey(d);
     return `
       <button data-action="statday" data-key="${k}" class="flex-1 flex flex-col items-center gap-1.5">
         <span class="text-[11px] text-gray-500 tabular-nums h-4">${vals[i] >= 60000 ? fmtHM(vals[i]) : ''}</span>
-        <div class="w-full max-w-[28px] h-36 bg-gray-100 rounded-lg flex items-end overflow-hidden"><div class="w-full bg-brand rounded-lg" style="height:${h}%"></div></div>
+        <div class="w-full max-w-[32px] h-40 bg-white/60 rounded-xl flex items-end overflow-hidden"><div class="btn w-full rounded-xl" style="height:${Math.round((vals[i] / max) * 100)}%"></div></div>
         <span class="text-xs ${k === today ? 'font-bold text-brand' : 'text-gray-500'}">${WD[d.getDay()]}</span>
       </button>`;
   }).join('');
   const end = days[6];
-  return `
-  <section class="bg-white rounded-2xl p-5">
+  const left = `
+  <section class="${CARD}">
     <div class="flex items-center justify-between">
-      <button data-action="statweek" data-delta="-1" class="w-8 text-gray-400" aria-label="이전 주"><i class="fa-solid fa-caret-left"></i></button>
+      <button data-action="statweek" data-delta="-1" class="w-8 text-gray-500" aria-label="이전 주"><i class="fa-solid fa-caret-left"></i></button>
       <span class="font-bold">${ws.getMonth() + 1}.${ws.getDate()} – ${end.getMonth() + 1}.${end.getDate()}</span>
-      <button data-action="statweek" data-delta="1" class="w-8 text-gray-400" aria-label="다음 주"><i class="fa-solid fa-caret-right"></i></button>
+      <button data-action="statweek" data-delta="1" class="w-8 text-gray-500" aria-label="다음 주"><i class="fa-solid fa-caret-right"></i></button>
     </div>
     <div class="mt-5 flex gap-2 items-end">${bars}</div>
-    <div class="mt-6 grid grid-cols-3 text-center">${summ('주간 합계', fmtHM(sum))}${summ('일 평균', fmtHM(sum / 7))}${summ('출석', att + '/7일')}</div>
-  </section>
-  ${subjectBreakdown(list)}`;
+    <div class="mt-6 grid grid-cols-3 text-center">${summ('주간 합계', fmtHM(sum))}${summ('일 평균', fmtHM(sum / 7))}${summ('출석', vals.filter((v) => v >= 60000).length + '/7일')}</div>
+  </section>`;
+  const right = subjectBreakdown(allSessions().filter((x) => keys.has(x.d))) || `<section class="${CARD} text-center text-gray-500">이 주에는 기록이 없어요</section>`;
+  return [left, right];
 }
 
 function monthStats(totals) {
@@ -799,9 +772,8 @@ function monthStats(totals) {
   const sum = entries.reduce((a, [, v]) => a + v, 0);
   const best = entries.slice().sort((a, b) => b[1] - a[1])[0];
   const achieved = Object.keys(D.todos).filter((k) => k.startsWith(prefix) && isAchieved(k)).length;
-  const list = allSessions().filter((x) => x.d.startsWith(prefix));
   return `
-  <section class="bg-white rounded-2xl p-5">
+  <section class="${CARD}">
     <h2 class="text-center text-lg font-semibold">${mo + 1}월 요약</h2>
     <div class="mt-5 grid grid-cols-2 gap-y-5 text-center">
       ${summ('총 공부 시간', fmtHM(sum))}
@@ -809,9 +781,9 @@ function monthStats(totals) {
       ${summ('하루 평균', entries.length ? fmtHM(sum / entries.length) : '0:00')}
       ${summ('할 일 100% 달성', achieved + '일')}
     </div>
-    ${best ? `<p class="mt-5 text-center text-sm text-gray-500">최고 기록 ${fmtDateKo(parseKey(best[0]))} · <b class="text-brand">${fmtHM(best[1])}</b></p>` : ''}
+    ${best ? `<p class="mt-5 text-center text-sm text-gray-600">최고 기록 ${fmtDateKo(parseKey(best[0]))} · <b class="text-brand">${fmtHM(best[1])}</b></p>` : ''}
   </section>
-  ${subjectBreakdown(list)}`;
+  ${subjectBreakdown(allSessions().filter((x) => x.d.startsWith(prefix)))}`;
 }
 
 function subjectBreakdown(list) {
@@ -819,96 +791,81 @@ function subjectBreakdown(list) {
   if (!total) return '';
   const rows = Object.entries(bySubject(list)).sort((a, b) => b[1] - a[1]).map(([sid, ms]) => {
     const s = D.subjects.find((x) => x.id === sid) || { name: '삭제된 과목', color: '#CBD5E1' };
-    const color = safeColor(s.color), p = Math.round((ms / total) * 100);
+    const p = Math.round((ms / total) * 100);
     return `
       <li>
         <div class="flex justify-between text-sm">
-          <span class="flex items-center gap-2"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:${color}"></i>${esc(s.name)}</span>
+          <span class="flex items-center gap-2"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:${s.color}"></i>${esc(s.name)}</span>
           <span class="tabular-nums text-gray-600">${fmtHM(ms)} · ${p}%</span>
         </div>
-        <div class="mt-1.5 h-2 rounded-full bg-gray-100 overflow-hidden"><div class="h-full rounded-full" style="width:${p}%;background:${color}"></div></div>
+        <div class="mt-1.5 h-2 rounded-full bg-white/70 overflow-hidden"><div class="h-full rounded-full" style="width:${p}%;background:${s.color}"></div></div>
       </li>`;
   }).join('');
-  return `<section class="bg-white rounded-2xl p-5"><h3 class="font-semibold">과목별 공부 시간</h3><ul class="mt-4 space-y-4">${rows}</ul></section>`;
+  return `<section class="${CARD}"><h3 class="font-semibold">과목별 공부 시간</h3><ul class="mt-4 space-y-4">${rows}</ul></section>`;
 }
 
 // ---------- 나 (프로필 · 등급) ----------
 function profileView() {
   const u = myProfile(), g = gradeInfo(), q = allQuotes();
   const bar = (label, v, max) => `
-    <div class="mt-2">
-      <div class="flex justify-between text-xs text-white/80"><span>${label}</span><span>${Math.min(v, max)} / ${max}일</span></div>
-      <div class="mt-1 h-1.5 rounded-full bg-white/25 overflow-hidden"><div class="h-full bg-white rounded-full" style="width:${Math.min(100, (v / max) * 100)}%"></div></div>
+    <div>
+      <div class="flex justify-between text-xs text-white/85"><span>${label}</span><span>${Math.min(v, max)} / ${max}일</span></div>
+      <div class="mt-1.5 h-2 rounded-full bg-white/25 overflow-hidden"><div class="h-full bg-white rounded-full" style="width:${Math.min(100, (v / max) * 100)}%"></div></div>
     </div>`;
   const progress = g.next
-    ? `<div class="mt-5 text-sm text-white/85">다음 등급 <b>${g.next.name}</b>까지</div>${bar('출석', g.att, g.next.att)}${bar('목표 달성', g.ach, g.next.ach)}`
-    : '<p class="mt-5 text-sm">최고 등급이에요! 🎉</p>';
+    ? `<div class="mt-6 text-sm text-white/90">다음 등급 <b>${g.next.name}</b>까지</div>
+       <div class="mt-2 grid gap-3 md:grid-cols-2">${bar('출석', g.att, g.next.att)}${bar('목표 달성', g.ach, g.next.ach)}</div>`
+    : '<p class="mt-6 text-sm">최고 등급이에요! 🎉</p>';
   return `
-  <header class="bg-brand text-white px-5 pt-8 pb-6">
+  <section class="glass-hero rounded-[2rem] p-6 md:p-8">
     <div class="flex items-center gap-4">
       <label class="relative shrink-0 cursor-pointer" aria-label="프로필 사진 바꾸기">
-        ${avatar(u, 'w-16 h-16', 'text-2xl')}
-        <span class="absolute -bottom-0.5 -right-0.5 w-6 h-6 rounded-full bg-white text-brand grid place-items-center text-[11px] shadow"><i class="fa-solid fa-camera"></i></span>
+        ${avatar(u, 'w-20 h-20 text-2xl ring-4 ring-white/40')}
+        <span class="absolute bottom-0 right-0 w-7 h-7 rounded-full bg-white text-brand grid place-items-center text-xs shadow"><i class="fa-solid fa-camera"></i></span>
         <input type="file" accept="image/*" data-input="photo" class="hidden">
       </label>
       <div class="min-w-0">
-        <div class="text-2xl font-bold truncate">${esc(u.nick)}</div>
-        <div class="mt-1 flex items-center gap-2">
-          <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-white text-brand">${g.grade.name}</span>
-          ${safePhoto(u.photo) ? '<button data-action="photodel" class="text-xs text-white/70 underline">사진 삭제</button>' : ''}
+        <div class="text-2xl md:text-3xl font-bold truncate">${esc(u.nick)}</div>
+        <div class="mt-1.5 flex items-center gap-2">
+          <span class="px-3 py-0.5 rounded-full text-xs font-bold bg-white text-brand-dark">${g.grade.name}</span>
+          ${u.photo ? '<button data-action="photodel" class="text-xs text-white/80 underline">사진 삭제</button>' : ''}
         </div>
       </div>
     </div>
     ${progress}
-  </header>
-  <main class="px-5 pb-36 mt-5 space-y-4">
-    <section class="p-4 rounded-2xl bg-gray-50">
+  </section>
+  <div class="mt-4 grid gap-4 md:grid-cols-2">
+    <section class="${CARD}">
       <div class="flex justify-between items-center">
         <h3 class="font-semibold">시험 전 나의 목표</h3>
-        <button data-action="editprofile" class="text-sm text-gray-400"><i class="fa-solid fa-pen mr-1"></i>수정</button>
+        <button data-action="editprofile" class="text-sm text-gray-500"><i class="fa-solid fa-pen mr-1"></i>수정</button>
       </div>
       <p class="mt-2 text-gray-700">${u.goal ? esc(u.goal) : '<span class="text-gray-400">목표를 적어보세요</span>'}</p>
-      <h3 class="mt-4 font-semibold">나의 좌우명</h3>
+      <h3 class="mt-5 font-semibold">나의 좌우명</h3>
       <p class="mt-2 text-gray-700">${u.motto ? `“${esc(u.motto)}”` : '<span class="text-gray-400">좌우명을 적어보세요</span>'}</p>
     </section>
-    <section class="p-4 rounded-2xl bg-gray-50 flex justify-between items-center">
+    <section class="${CARD} flex justify-between items-center">
       <div>
         <h3 class="font-semibold">시험일</h3>
-        <p class="mt-1 text-sm text-gray-500">${D.examDate ? fmtDateKo(parseKey(D.examDate)) : '설정 안 됨'}</p>
+        <p class="mt-1 text-sm text-gray-600">${D.examDate ? fmtDateKo(parseKey(D.examDate)) : '설정 안 됨'}</p>
       </div>
-      <button data-action="dday" class="px-3 py-1.5 rounded-full bg-brand text-white text-sm font-semibold">${ddayLabel()}</button>
+      <button data-action="dday" class="btn px-4 py-2 rounded-full text-sm font-semibold">${ddayLabel()}</button>
     </section>
-    <section class="p-4 rounded-2xl bg-gray-50">
+    <section class="${CARD}">
       <h3 class="font-semibold">등급 기준</h3>
       <ul class="mt-3 space-y-1.5 text-sm">${GRADES.map((x) => `
         <li class="flex justify-between ${x === g.grade ? 'font-bold text-brand' : 'text-gray-600'}">
           <span>${x.name}</span><span>${x.att ? `출석 ${x.att}일 · 달성 ${x.ach}일` : '가입하면 시작'}</span>
         </li>`).join('')}
       </ul>
-      <p class="mt-3 text-xs text-gray-400">출석: 1분 이상 공부한 날 · 달성: 할 일을 100% 끝낸 날<br>현재 출석 ${g.att}일 · 달성 ${g.ach}일</p>
+      <p class="mt-3 text-xs text-gray-500">출석: 1분 이상 공부한 날 · 달성: 할 일을 100% 끝낸 날<br>현재 출석 ${g.att}일 · 달성 ${g.ach}일</p>
     </section>
-    <section class="p-4 rounded-2xl bg-gray-50">
-      <h3 class="font-semibold">모두의 명언 <span class="text-sm font-normal text-gray-400">${q.length}</span></h3>
-      <ul class="mt-3 space-y-2 text-sm text-gray-700">${q.map((x) => `<li>“${esc(x.text)}”${x.by ? ` <span class="text-gray-400">— ${esc(x.by)}</span>` : ''}</li>`).join('')}</ul>
+    <section class="${CARD}">
+      <h3 class="font-semibold">모두의 명언 <span class="text-sm font-normal text-gray-500">${q.length}</span></h3>
+      <ul class="mt-3 space-y-2 text-sm text-gray-700 max-h-72 overflow-y-auto">${q.map((x) => `<li>“${esc(x.text)}”${x.by ? ` <span class="text-gray-500">— ${esc(x.by)}</span>` : ''}</li>`).join('')}</ul>
     </section>
-    <button data-action="logout" class="w-full py-3 rounded-xl border border-gray-200 text-gray-500">로그아웃</button>
-  </main>`;
-}
-
-// ---------- 하단 탭 ----------
-function navView() {
-  const items = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['calendar', 'fa-calendar-days', '달력'], ['stats', 'fa-chart-simple', '통계'], ['me', 'fa-user', '나']];
-  const photo = safePhoto(myProfile().photo);
-  return `
-  <nav class="fixed bottom-4 inset-x-0 z-30 px-4">
-    <div class="max-w-md mx-auto flex bg-white/95 backdrop-blur rounded-full shadow-lg ring-1 ring-black/5 p-1.5">
-      ${items.map(([v, icon, label]) => `
-        <button data-action="go" data-view="${v}" class="flex-1 py-2 rounded-full flex flex-col items-center gap-0.5 ${ui.view === v ? 'bg-gray-100 text-gray-900' : 'text-gray-400'}">
-          ${v === 'me' && photo ? `<img src="${esc(photo)}" alt="" class="w-[18px] h-[18px] rounded-full object-cover ${ui.view === v ? 'ring-2 ring-brand' : ''}">` : `<i class="fa-solid ${icon} text-lg"></i>`}
-          <span class="text-[11px] font-medium">${label}</span>
-        </button>`).join('')}
-    </div>
-  </nav>`;
+  </div>
+  <button data-action="logout" class="glass mt-4 w-full md:w-auto md:px-10 py-3 rounded-2xl text-gray-600">로그아웃</button>`;
 }
 
 // ============================================================
@@ -916,8 +873,8 @@ function navView() {
 // ============================================================
 function openModal(html) {
   $('#modal').innerHTML = `
-  <div class="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" data-action="backdrop">
-    <div class="w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 pb-8 max-h-[85vh] overflow-y-auto">${html}</div>
+  <div class="fixed inset-0 z-50 bg-black/25 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-6" data-action="backdrop">
+    <div class="glass-strong w-full sm:max-w-md rounded-t-[2rem] sm:rounded-[2rem] p-6 pb-8 max-h-[85vh] overflow-y-auto">${html}</div>
   </div>`;
 }
 function closeModal() {
@@ -927,11 +884,11 @@ function closeModal() {
 }
 
 function paletteView(s) {
-  const current = safeColor(s.color).toLowerCase();
+  const current = s.color.toLowerCase();
   return `
-  <div class="mt-3 mb-1 p-3 rounded-2xl bg-gray-50">
+  <div class="mt-3 mb-1 p-3 rounded-2xl bg-white/60">
     <div class="grid grid-cols-8 gap-2">${PALETTE.map((c) => `
-      <button data-action="setcolor" data-id="${s.id}" data-color="${c}" class="aspect-square rounded-full grid place-items-center text-white text-[10px]" style="background:${c}" aria-label="${c}">
+      <button data-action="setcolor" data-id="${s.id}" data-color="${c}" class="orb aspect-square rounded-full grid place-items-center text-white text-[10px]" style="background-color:${c};--c:${c}" aria-label="${c}">
         ${c.toLowerCase() === current ? '<i class="fa-solid fa-check"></i>' : ''}
       </button>`).join('')}
     </div>
@@ -946,24 +903,24 @@ function subjectModal() {
   openModal(`
     <div class="flex items-center justify-between">
       <h3 class="text-lg font-bold">과목 편집</h3>
-      <button data-action="closemodal" class="w-8 h-8 text-gray-400" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+      <button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
     </div>
     <p class="mt-1 text-sm text-gray-500">색 동그라미를 누르면 팔레트가 열려요.</p>
     <div class="mt-5 space-y-3">${D.subjects.map((s) => `
       <div>
         <div class="flex items-center gap-2">
-          <button data-action="palette" data-id="${s.id}" class="w-9 h-9 shrink-0 rounded-full ring-offset-2 ${ui.paletteFor === s.id ? 'ring-2 ring-gray-800' : ''}" style="background:${safeColor(s.color)}" aria-label="색 고르기"></button>
-          <input data-input="subname" data-id="${s.id}" value="${esc(s.name)}" maxlength="20" class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
-          <button data-action="subdel" data-id="${s.id}" class="w-8 text-gray-400 hover:text-red-400" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
+          <button data-action="palette" data-id="${s.id}" class="orb w-10 h-10 shrink-0 rounded-full ${ui.paletteFor === s.id ? 'on' : ''}" style="background-color:${s.color};--c:${s.color}" aria-label="색 고르기"></button>
+          <input data-input="subname" data-id="${s.id}" value="${esc(s.name)}" maxlength="20" class="${INPUT} flex-1 min-w-0 !py-2.5">
+          <button data-action="subdel" data-id="${s.id}" class="w-8 text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
         </div>
         ${ui.paletteFor === s.id ? paletteView(s) : ''}
       </div>`).join('')}
     </div>
     <form data-form="subadd" class="mt-4 flex gap-2">
-      <input name="name" required maxlength="20" autocomplete="off" placeholder="새 과목 이름" class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
-      <button class="px-4 rounded-xl bg-gray-900 text-white text-sm font-semibold">추가</button>
+      <input name="name" required maxlength="20" autocomplete="off" placeholder="새 과목 이름" class="${INPUT} flex-1 min-w-0 !py-2.5">
+      <button class="px-4 rounded-2xl bg-gray-900 text-white text-sm font-semibold">추가</button>
     </form>
-    <button data-action="closemodal" class="mt-6 w-full py-3 rounded-xl bg-brand text-white font-semibold">완료</button>`);
+    <button data-action="closemodal" class="btn mt-6 w-full py-3 rounded-2xl font-semibold">완료</button>`);
 }
 
 function ddayModal() {
@@ -971,10 +928,10 @@ function ddayModal() {
     <h3 class="text-lg font-bold">시험일 설정</h3>
     <p class="mt-1 text-sm text-gray-500">홈 화면 왼쪽 위에 D-Day가 표시돼요.</p>
     <form data-form="dday" class="mt-5 space-y-4">
-      <input type="date" name="date" value="${esc(D.examDate)}" class="w-full px-4 py-3 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
+      <input type="date" name="date" value="${esc(D.examDate)}" class="${INPUT}">
       <div class="flex gap-2">
-        <button type="button" data-action="ddayclear" class="flex-1 py-3 rounded-xl bg-gray-100 text-gray-600">지우기</button>
-        <button class="flex-1 py-3 rounded-xl bg-brand text-white font-semibold">저장</button>
+        <button type="button" data-action="ddayclear" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">지우기</button>
+        <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
       </div>
     </form>`);
 }
@@ -985,25 +942,14 @@ function profileModal() {
     <h3 class="text-lg font-bold">프로필 수정</h3>
     <form data-form="profile" class="mt-5 space-y-4">
       <label class="block"><span class="text-sm font-medium text-gray-600">시험 전 나의 목표</span>
-        <input name="goal" value="${esc(u.goal)}" maxlength="60" class="mt-1.5 w-full px-4 py-3 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand"></label>
+        <input name="goal" value="${esc(u.goal)}" maxlength="60" class="mt-1.5 ${INPUT}"></label>
       <label class="block"><span class="text-sm font-medium text-gray-600">나의 좌우명</span>
-        <input name="motto" value="${esc(u.motto)}" maxlength="80" class="mt-1.5 w-full px-4 py-3 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand"></label>
+        <input name="motto" value="${esc(u.motto)}" maxlength="80" class="mt-1.5 ${INPUT}"></label>
       <div class="flex gap-2">
-        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-xl bg-gray-100 text-gray-600">취소</button>
-        <button class="flex-1 py-3 rounded-xl bg-brand text-white font-semibold">저장</button>
+        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
+        <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
       </div>
     </form>`);
-}
-
-async function updateProfile(patch, doneMsg) {
-  profiles[me] = { ...myProfile(), ...patch };
-  render();
-  try {
-    await backend.saveProfile(me, patch);
-    if (doneMsg) toast(doneMsg);
-  } catch (e) {
-    toast('저장하지 못했어요. ' + e.message);
-  }
 }
 
 // ============================================================
@@ -1024,7 +970,7 @@ const actions = {
   backdrop: (el, e) => { if (e.target === el) closeModal(); },
 
   tododay: (el) => { ui.todoDate = dkey(addDays(parseKey(ui.todoDate), Number(el.dataset.delta))); render(); },
-  todotoday: () => { ui.todoDate = dkey(); render(); },
+  todotoday: () => { ui.todoDate = today; render(); },
   todotoggle: (el) => {
     const t = todosOn(ui.todoDate).find((x) => x.id === el.dataset.id);
     if (t) { t.done = !t.done; save(); render(); }
@@ -1039,8 +985,8 @@ const actions = {
 
   mates: async (el) => {
     ui.mates = el.checked;
-    if (ui.mates && !mateData) {
-      try { await loadMates(); } catch (e) { toast('스터디원 기록을 불러오지 못했어요'); }
+    if (ui.mates) {
+      try { await loadMates(); } catch (e) { toast('스터디원 기록을 불러오지 못했어요 · ' + friendly(e)); }
     }
     render();
   },
@@ -1050,10 +996,7 @@ const actions = {
   statweek: (el) => { ui.statWeek = addDays(ui.statWeek, 7 * Number(el.dataset.delta)); render(); },
   statday: (el) => {
     const d = parseKey(el.dataset.key);
-    ui.statDay = el.dataset.key;
-    ui.statMonth = monthOf(d);
-    ui.statWeek = mondayOf(d);
-    ui.statMode = 'day';
+    Object.assign(ui, { statDay: el.dataset.key, statMonth: monthOf(d), statWeek: mondayOf(d), statMode: 'day' });
     render();
   },
 
@@ -1062,15 +1005,13 @@ const actions = {
     subjectModal();
   },
   setcolor: (el) => {
-    const s = findSubject(el.dataset.id);
-    if (!s) return;
-    s.color = el.dataset.color;
+    findSubject(el.dataset.id).color = el.dataset.color;
     save();
     subjectModal();
   },
   subdel: (el) => {
     const s = findSubject(el.dataset.id);
-    if (!s || !confirm(`'${s.name}' 과목을 삭제할까요?\n지금까지의 공부 기록은 통계에 남아요.`)) return;
+    if (!confirm(`'${s.name}' 과목을 삭제할까요?\n지금까지의 공부 기록은 통계에 남아요.`)) return;
     if (D.running?.sid === s.id) commitRunning();
     D.subjects = D.subjects.filter((x) => x.id !== s.id);
     save();
@@ -1078,7 +1019,7 @@ const actions = {
   },
 
   authmode: (el) => {
-    ui.lastNick = document.querySelector('[name="nick"]')?.value || ui.lastNick;
+    ui.lastNick = $('[name="nick"]')?.value || ui.lastNick;
     ui.authMode = el.dataset.mode;
     ui.authError = '';
     render();
@@ -1094,22 +1035,20 @@ const forms = {
     (D.todos[ui.todoDate] ||= []).push({ id: uid(), text, done: false });
     save();
     render();
-    $('[data-form="todoadd"] input')?.focus();
+    $('[data-form="todoadd"] input').focus();
   },
   subadd: (f) => {
     const name = f.elements.name.value.trim();
     if (!name) return;
-    const s = { id: uid(), name, color: PALETTE[(D.subjects.length * 5) % PALETTE.length] };
-    D.subjects.push(s);
+    D.subjects.push({ id: uid(), name, color: PALETTE[(D.subjects.length * 5) % PALETTE.length] });
     save();
     subjectModal();
-    $('[data-form="subadd"] input')?.focus();
+    $('[data-form="subadd"] input').focus();
   },
   dday: (f) => { D.examDate = f.elements.date.value; save(); closeModal(); },
   profile: (f) => {
-    const patch = { goal: f.elements.goal.value.trim(), motto: f.elements.motto.value.trim() };
     $('#modal').innerHTML = '';
-    updateProfile(patch);
+    updateProfile({ goal: f.elements.goal.value.trim(), motto: f.elements.motto.value.trim() });
   },
 };
 
@@ -1130,8 +1069,9 @@ document.addEventListener('input', (e) => {
   if (t.dataset.input === 'subname' && t.value.trim()) s.name = t.value.trim();
   if (t.dataset.input === 'subcolor') {
     s.color = t.value;
-    const dot = document.querySelector(`[data-action="palette"][data-id="${s.id}"]`);
-    if (dot) dot.style.background = t.value;
+    const dot = $(`[data-action="palette"][data-id="${s.id}"]`);
+    dot.style.backgroundColor = t.value;
+    dot.style.setProperty('--c', t.value);
   }
 });
 document.addEventListener('change', async (e) => {
@@ -1140,8 +1080,7 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.input === 'subcolor') { save(); subjectModal(); }
   if (t.dataset.input === 'photo' && t.files?.[0]) {
     try {
-      const photo = await readPhoto(t.files[0]);
-      await updateProfile({ photo }, '프로필 사진을 바꿨어요');
+      await updateProfile({ photo: await readPhoto(t.files[0]) }, '프로필 사진을 바꿨어요');
     } catch (err) {
       toast(err.message);
     }
@@ -1155,15 +1094,17 @@ setInterval(updateLive, 1000);
 // ============================================================
 (async function boot() {
   render();
-  const config = window.MICHO_FIREBASE;
   try {
-    backend = config?.apiKey ? await createFirebaseBackend(config) : LocalBackend;
-    const id = await backend.restore();
-    if (id) await enter(id);
+    await initFirebase();
+    const user = await new Promise((resolve) => {
+      const off = fb.a.onAuthStateChanged(fb.auth, (u) => { off(); resolve(u); });
+    });
+    ready = true;
+    if (user) await enter(user.uid);
     else render();
   } catch (e) {
     console.error(e);
-    ui.fatal = e.message || String(e);
+    ui.fatal = friendly(e);
     render();
   }
 })();
