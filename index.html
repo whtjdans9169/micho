@@ -13,7 +13,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="동기들과스터디">
   <meta name="application-name" content="동기들과스터디">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <!-- 홈 화면 앱에서 배경이 상태바(시간 · 배터리 줄) 뒤까지 이어지게 -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
   <script src="https://cdn.tailwindcss.com"></script>
@@ -118,9 +119,12 @@
     }
     .orb.on { box-shadow: inset 0 1px 1px rgba(255, 255, 255, .7), 0 0 0 6px color-mix(in srgb, var(--c) 28%, transparent), 0 8px 18px -6px var(--c); }
 
-    /* 하단 탭 (아이폰 홈 바와 겹치지 않게) */
+    /* 배경은 상태바 뒤까지, 내용은 상태바 아래부터 (일반 브라우저에서는 여백 0) */
+    body { padding-top: env(safe-area-inset-top); }
+
+    /* 하단 탭 (아이폰 홈 바와 겹치지 않게) · 사이드바는 상태바 아래부터 */
     .nav { bottom: max(1rem, env(safe-area-inset-bottom)); }
-    @media (min-width: 768px) { .nav { bottom: 1rem; } }
+    @media (min-width: 768px) { .nav { bottom: 1rem; top: calc(1rem + env(safe-area-inset-top)) !important; } }
 
     /* ---------- 다크 모드 (html.dark) ---------- */
     html.dark { color-scheme: dark; }
