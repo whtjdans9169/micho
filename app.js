@@ -1218,7 +1218,60 @@ function profileView() {
       <ul class="mt-3 space-y-2 text-sm text-gray-700 max-h-72 overflow-y-auto">${q.map((x) => `<li>“${esc(x.text)}”${x.by ? ` <span class="text-gray-500">— ${esc(x.by)}</span>` : ''}</li>`).join('')}</ul>
     </section>
   </div>
-  <button data-action="logout" class="glass mt-4 w-full md:w-auto md:px-10 py-3 rounded-2xl text-gray-600">로그아웃</button>`;
+  <button data-action="logout" class="glass mt-4 w-full md:w-auto md:px-10 py-3 rounded-2xl text-gray-600">로그아웃</button>
+  ${isAdmin()
+    ? '<p class="mt-4 text-center md:text-left text-xs text-gray-400">관리자 계정은 탈퇴할 수 없어요.</p>'
+    : '<button data-action="withdraw" class="mt-4 block mx-auto md:mx-0 text-sm text-gray-400 underline">탈퇴하기</button>'}`;
+}
+
+function withdrawModal() {
+  openModal(`
+    <h3 class="text-lg font-bold text-red-500">탈퇴하기</h3>
+    <p class="mt-2 text-sm text-gray-600 leading-relaxed">
+      탈퇴하면 <b>프로필 · 공부 기록 · 할 일 · 인증샷 · 내 명언</b>과 로그인 계정이 모두 지워지고 되돌릴 수 없어요.
+      자료 메뉴에 올린 파일은 다른 멤버들을 위해 남아요.
+    </p>
+    <form data-form="withdraw" class="mt-4 space-y-3">
+      <label class="block"><span class="text-sm font-medium text-gray-600">확인을 위해 비밀번호를 입력해주세요</span>
+        <input type="password" name="pw" required autocomplete="current-password" class="mt-1.5 ${INPUT}"></label>
+      <div class="flex gap-2">
+        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
+        <button data-submit class="flex-1 py-3 rounded-2xl bg-red-500 text-white font-semibold disabled:opacity-60">탈퇴하기</button>
+      </div>
+    </form>`);
+}
+
+// 비밀번호로 한 번 더 확인한 뒤, 내 데이터를 지우고 로그인 계정까지 삭제한다
+async function withdraw(form) {
+  const btn = form.querySelector('[data-submit]');
+  btn.disabled = true;
+  btn.textContent = '탈퇴하는 중…';
+  const { a, f, auth, db } = fb;
+  try {
+    const user = auth.currentUser;
+    await a.reauthenticateWithCredential(user, a.EmailAuthProvider.credential(user.email, form.elements.pw.value));
+    stopWatching();
+    const mine = (col) => f.getDocs(f.query(f.collection(db, col), f.where('uid', '==', me)));
+    const [myProofDocs, myQuotes] = await Promise.all([mine('proofs'), mine('quotes')]);
+    await Promise.all([
+      ...myProofDocs.docs.map((d) => deleteProof(d.id)),
+      ...myQuotes.docs.map((d) => f.deleteDoc(d.ref)),
+      f.deleteDoc(docRef('data', me)),
+      f.deleteDoc(docRef('users', me)),
+    ]);
+    await a.deleteUser(user);
+    me = D = null;
+    profiles = {};
+    ui.lastNick = '';
+    $('#modal').innerHTML = '';
+    render();
+    toast('탈퇴했어요. 그동안 함께해서 고마웠어요!');
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '탈퇴하기';
+    const wrongPw = ['auth/invalid-credential', 'auth/wrong-password', 'auth/invalid-login-credentials'].includes(e.code);
+    toast(wrongPw ? '비밀번호가 맞지 않아요.' : '탈퇴하지 못했어요 · ' + friendly(e));
+  }
 }
 
 // ============================================================
@@ -1546,10 +1599,12 @@ const actions = {
     render();
   },
   logout: () => logout(),
+  withdraw: () => withdrawModal(),
 };
 
 const forms = {
   auth: (f) => onAuth(f),
+  withdraw: (f) => withdraw(f),
   todoadd: (f) => {
     const text = f.elements.text.value.trim();
     if (!text) return;
