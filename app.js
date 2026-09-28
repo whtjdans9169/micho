@@ -304,7 +304,7 @@ const ui = {
 const myProfile = () => profiles[me] || { nick: ui.lastNick, goal: '', motto: '', photo: '' };
 const isAdmin = () => myProfile().nick === ADMIN_NICK;
 const isBanned = (id) => !!settings.banned?.[id];
-// 내보낸 멤버를 뺀 명단 (멤버 목록 · 벌금 · 인증샷 피드에 쓰임)
+// 내보낸 멤버를 뺀 명단 (멤버 목록 · 벌금 현황에 쓰임. 오늘의 인증 현황 · 인증샷 피드에는 남긴다)
 const activeMembers = () => Object.entries(profiles).filter(([id]) => !isBanned(id));
 function allQuotes() {
   const seen = new Set();
@@ -747,10 +747,10 @@ function homeView() {
   ${proofFeed()}`;
 }
 
-// 오늘의 인증 현황: 인증한 멤버는 초록 테두리, 아직인 멤버는 흐리게
+// 오늘의 인증 현황: 인증한 멤버는 초록 테두리, 아직인 멤버는 흐리게 (내보낸 멤버도 기록으로 남긴다)
 function todayStatus() {
   const done = new Set(todayProofs.map((p) => p.uid));
-  const members = activeMembers().sort(([a], [b]) => done.has(b) - done.has(a));
+  const members = Object.entries(profiles).sort(([a], [b]) => done.has(b) - done.has(a));
   const count = members.filter(([id]) => done.has(id)).length;
   return `
   <section class="glass rounded-3xl p-4 md:p-5 mt-4 lg:mt-6">
@@ -787,7 +787,7 @@ function reactBar(p, onPhoto) {
 
 // 모두의 인증샷: 인스타그램 게시물 비율(4:5), 왼쪽 아래에 올린 사람, 오른쪽 아래에 응원 반응
 function proofFeed() {
-  const shown = proofs.filter((p) => !isBanned(p.uid));
+  const shown = proofs; // 내보낸 멤버의 인증샷도 기록으로 남긴다
   const card = (p) => {
     const who = whoOf(p);
     return `
