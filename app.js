@@ -409,10 +409,21 @@ function gradeInfo(data = D) {
   return { att, ach, grade: GRADES[i], next: GRADES[i + 1] || null };
 }
 
-function ddayLabel() {
-  const diff = Math.round((parseKey(settings.examDate) - parseKey(today)) / DAY);
+// D-Day 목록 (각자 따로). 공유 시험일은 id 'exam' 자리표시로 들어 있고, 날짜는 모두의 설정에서 가져온다
+// 맨 윗줄이 홈 화면 D-Day
+const EXAM_ID = 'exam';
+function ddayList() {
+  const list = D.ddays?.length ? D.ddays : [{ id: EXAM_ID }];
+  const withExam = list.some((x) => x.id === EXAM_ID) ? list : [...list, { id: EXAM_ID }];
+  return withExam.map((x) => (x.id === EXAM_ID ? { id: EXAM_ID, name: '건축사 시험', date: settings.examDate, shared: true } : x));
+}
+// 저장할 때는 공유 시험일의 이름 · 날짜는 빼고 자리만 남긴다
+const saveDdays = (list) => { D.ddays = list.map((x) => (x.shared ? { id: EXAM_ID } : { id: x.id, name: x.name, date: x.date })); save(); };
+function ddayText(date) {
+  const diff = Math.round((parseKey(date) - parseKey(today)) / DAY);
   return diff > 0 ? `D-${diff}` : diff === 0 ? 'D-Day' : `D+${-diff}`;
 }
+const ddayLabel = () => ddayText(ddayList()[0].date);
 
 // 벌금: 시작일(또는 가입일)부터 어제까지, 할 일을 안 적었거나 · 다 못 끝냈거나 · 인증샷이 없는 날마다 부과
 // 본인이 금액을 고치면 그 차이(fineAdjust)를 프로필에 저장해서, 이후 벌금은 그 위에 계속 더해진다
@@ -768,7 +779,10 @@ function homeView() {
   <div class="grid gap-4 lg:gap-6 lg:grid-cols-5">
     <section class="glass-hero rounded-[2rem] p-6 md:p-8 lg:col-span-3 flex flex-col lg:min-h-[440px]">
       <div class="flex items-center justify-between">
-        <button data-action="dday" class="chip px-3.5 py-1.5 rounded-full text-sm font-semibold">${ddayLabel()}</button>
+        <button data-action="ddaylist" class="chip px-3.5 py-1 rounded-2xl text-left leading-tight max-w-[40%]" aria-label="D-Day 목록">
+          <span class="block text-[10px] text-white/80 truncate">${esc(ddayList()[0].name)}</span>
+          <span class="block text-sm font-semibold">${ddayLabel()}</span>
+        </button>
         <div class="text-lg font-medium">${fmtDate(new Date())}</div>
         <button data-action="subjects" class="chip w-10 h-10 rounded-full grid place-items-center" aria-label="과목 편집"><i class="fa-solid fa-palette"></i></button>
       </div>
@@ -1263,6 +1277,44 @@ async function fileUrl(f) {
 }
 
 // ---------- 나 (프로필 · 등급) ----------
+// D-Day 목록: ▲로 순서를 올리고, 맨 윗줄이 홈 D-Day. '나' 화면 카드와 홈 D-Day 버튼 창에서 함께 쓴다
+function ddayManager() {
+  const list = ddayList();
+  return `
+    <div class="flex items-center justify-between gap-2">
+      <h3 class="font-semibold">D-Day</h3>
+      <span class="text-xs text-gray-500">맨 윗줄이 홈에 보여요</span>
+    </div>
+    <ul class="mt-3 space-y-2">${list.map((x, i) => `
+      <li class="flex items-center gap-2.5 p-2.5 rounded-2xl ${i === 0 ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
+        <span class="w-16 shrink-0 text-center font-bold tabular-nums ${i === 0 ? 'text-brand' : ''}">${ddayText(x.date)}</span>
+        <div class="flex-1 min-w-0">
+          <div class="font-medium truncate">${esc(x.name)}${x.shared ? ' <span class="text-[11px] font-normal text-gray-500">모두 함께</span>' : ''}</div>
+          <div class="text-xs text-gray-500">${fmtDateKo(parseKey(x.date))}${i === 0 ? ' · <b class="text-brand">홈에 표시</b>' : ''}</div>
+        </div>
+        ${i > 0 ? `<button data-action="ddayup" data-id="${x.id}" class="w-8 h-8 shrink-0 rounded-full bg-white/80" aria-label="위로 올리기"><i class="fa-solid fa-arrow-up text-sm"></i></button>` : ''}
+        ${x.shared
+          ? '<button data-action="dday" class="w-8 h-8 shrink-0 rounded-full text-gray-500" aria-label="시험일 바꾸기"><i class="fa-solid fa-pen text-sm"></i></button>'
+          : `<button data-action="ddaydel" data-id="${x.id}" class="w-8 h-8 shrink-0 rounded-full text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>`}
+      </li>`).join('')}
+    </ul>
+    <form data-form="ddayadd" class="mt-3 space-y-2">
+      <input name="name" required maxlength="20" autocomplete="off" placeholder="새 D-Day 이름 (예: 모의고사)" class="${INPUT} !py-2.5">
+      <div class="flex gap-2">
+        <input type="date" name="date" required class="${INPUT} flex-1 min-w-0 !py-2.5">
+        <button class="btn px-4 rounded-2xl text-sm font-semibold whitespace-nowrap"><i class="fa-solid fa-plus mr-1"></i>추가</button>
+      </div>
+    </form>`;
+}
+// 목록이 바뀌면: 창으로 열려 있으면 창을 다시 그리고, 아니면 화면을 다시 그린다
+function refreshDdays() {
+  if (ui.ddayModal && $('#modal').innerHTML) openModal(ddayModalHtml());
+  else render();
+}
+const ddayModalHtml = () => `
+  <div class="flex justify-end -mt-2 -mr-2"><button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+  ${ddayManager()}`;
+
 // 가입한 멤버 명단: 등급이 높은 순 → 닉네임 순. 관리자에게는 내보내기 · 되돌리기 버튼이 보인다
 function membersCard() {
   const rank = (g) => GRADES.indexOf(g);
@@ -1341,13 +1393,7 @@ function profileView() {
       <h3 class="mt-5 font-semibold">나의 좌우명</h3>
       <p class="mt-2 text-gray-700">${u.motto ? `“${esc(u.motto)}”` : '<span class="text-gray-400">좌우명을 적어보세요</span>'}</p>
     </section>
-    <section class="${CARD} flex justify-between items-center">
-      <div>
-        <h3 class="font-semibold">시험일</h3>
-        <p class="mt-1 text-sm text-gray-600">${fmtDateKo(parseKey(settings.examDate))} · 모두 함께</p>
-      </div>
-      <button data-action="dday" class="btn px-4 py-2 rounded-full text-sm font-semibold">${ddayLabel()}</button>
-    </section>
+    <section class="${CARD}">${ddayManager()}</section>
     ${membersCard()}
     ${isAdmin() ? `
     <section class="${CARD}">
@@ -1482,6 +1528,7 @@ function closeModal() {
   $('#modal').innerHTML = '';
   ui.paletteFor = null;
   ui.openProof = null;
+  ui.ddayModal = false;
   render();
 }
 
@@ -1701,6 +1748,20 @@ const actions = {
   subjects: (el) => { ui.paletteFor = el.dataset.id || null; subjectModal(); },
   dday: () => ddayModal(),
   finesettings: () => fineModal(),
+  ddaylist: () => { ui.ddayModal = true; openModal(ddayModalHtml()); },
+  ddayup: (el) => {
+    const list = ddayList(), i = list.findIndex((x) => x.id === el.dataset.id);
+    if (i <= 0) return;
+    [list[i - 1], list[i]] = [list[i], list[i - 1]];
+    saveDdays(list);
+    refreshDdays();
+  },
+  ddaydel: (el) => {
+    const x = ddayList().find((d) => d.id === el.dataset.id);
+    if (!x || x.shared || !confirm(`'${x.name}' D-Day를 삭제할까요?`)) return;
+    saveDdays(ddayList().filter((d) => d.id !== x.id));
+    refreshDdays();
+  },
   goal: () => goalModal(),
   goalclear: () => { D.goalHours = 0; save(); closeModal(); },
   react: async (el) => {
@@ -1872,6 +1933,13 @@ const forms = {
     $('[data-form="subadd"] input').focus();
   },
   dday: (f) => saveSettings({ examDate: f.elements.date.value }, '시험일을 바꿨어요'),
+  ddayadd: (f) => {
+    const name = f.elements.name.value.trim(), date = f.elements.date.value;
+    if (!name || !date) return;
+    saveDdays([...ddayList(), { id: uid(), name, date }]);
+    refreshDdays();
+    toast(`'${name}' D-Day를 추가했어요. ▲로 올리면 홈에 보여요`);
+  },
   goal: (f) => {
     D.goalHours = Math.min(16, Math.max(0.5, Number(f.elements.hours.value) || 0));
     save();
