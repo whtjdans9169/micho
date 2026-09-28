@@ -16,6 +16,7 @@ const SDK = 'https://www.gstatic.com/firebasejs/12.9.0/';
 // ============================================================
 // 상수
 // ============================================================
+const TITLE = '정림24 건축사 스터디앱'; // 브라우저 탭 이름
 const BRAND = '#1F9D66';
 const MATE_COLOR = '#8E7CC3';
 const DEFAULT_COLORS = ['#D97471', '#8E7CC3', '#EBC04A'];
@@ -489,7 +490,7 @@ function navView() {
     <div class="glass rounded-full md:rounded-[1.75rem] p-1.5 md:p-3 flex md:flex-col gap-1 md:h-full">
       <div class="hidden md:flex items-center gap-2.5 px-3 pt-2 pb-5">
         <div class="btn w-9 h-9 rounded-xl grid place-items-center"><i class="fa-solid fa-compass-drafting"></i></div>
-        <span class="text-lg font-bold">micho</span>
+        <span class="text-lg font-bold">동기들과스터디</span>
       </div>
       ${NAV.map(item).join('')}
       <div class="hidden md:flex mt-auto items-center gap-3 p-2">
@@ -634,7 +635,7 @@ function updateLive() {
       el.textContent = D.running ? `${s ? s.name : ''} 집중 중 · ${fmtKo(Date.now() - D.running.s)}` : '과목의 ▶ 버튼을 눌러 공부를 시작하세요';
     }
   });
-  document.title = D.running ? `${fmtHMS(sumMs(list))} · micho` : 'micho 스터디 플래너';
+  document.title = D.running ? `${fmtHMS(sumMs(list))} · ${TITLE}` : TITLE;
 }
 
 // ---------- 할 일 ----------
