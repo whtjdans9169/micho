@@ -258,7 +258,7 @@ async function loadEveryone() {
     profiles = { ...p, [me]: { ...p[me], ...myProfile() } };
     allData = {};
     snap.forEach((d) => { allData[d.id] = d.data(); });
-    if (ui.view === 'stats' || ui.view === 'me') refreshView();
+    if (['home', 'stats', 'me'].includes(ui.view)) refreshView();
   } catch (e) {
     toast('모두의 기록을 불러오지 못했어요 · ' + friendly(e));
   }
@@ -485,6 +485,7 @@ async function enter(id) {
   watchToday();
   Object.assign(ui, { authError: '', authMode: 'login', view: 'home', paletteFor: null, quote: pickQuote() });
   render();
+  loadEveryone(); // 홈 저금통에 쓸 모두의 벌금
 }
 
 function watchFeed() {
@@ -592,7 +593,7 @@ function render() {
 
 function go(view) {
   if (view === 'todo') ui.todoDate = today;
-  if (view === 'stats' || view === 'me') loadEveryone(); // 벌금 · 멤버 등급을 최신 기록으로 다시 계산
+  if (['home', 'stats', 'me'].includes(view)) loadEveryone(); // 저금통 · 벌금 · 멤버 등급을 최신 기록으로 다시 계산
   ui.view = view;
   render();
   window.scrollTo(0, 0);
@@ -688,7 +689,49 @@ function loginView() {
   </div>`;
 }
 
-// ---------- 홈 (공지 · 타이머) ----------
+// ---------- 홈 (공지 · 저금통 · 타이머) ----------
+// 저금통: 1명당 금액으로 먹을 수 있는 메뉴 [최소 금액, 이모지, 메뉴, 동사(기본 '먹을')]
+const MENUS = [
+  [80000, '🍾', '호텔 뷔페'],
+  [50000, '🦞', '랍스터'],
+  [35000, '🥩', '소고기'],
+  [25000, '🥓', '삼겹살'],
+  [20000, '🍣', '초밥'],
+  [16000, '🍗', '치킨'],
+  [13000, '🍕', '피자'],
+  [10000, '🍔', '수제버거'],
+  [8000, '🍜', '라멘'],
+  [5000, '🍢', '떡볶이'],
+  [3000, '☕', '커피', '마실'],
+  [1, '🍦', '아이스크림'],
+];
+// 받침이 있으면 '을', 없으면 '를'
+const eulReul = (word) => { const c = word.charCodeAt(word.length - 1) - 0xAC00; return c >= 0 && c <= 11171 && c % 28 ? '을' : '를'; };
+
+function piggyBank() {
+  const rows = fineBoard();
+  const body = (() => {
+    if (!rows) return '<p class="mt-2 text-sm text-gray-500"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>불러오는 중…</p>';
+    const total = rows.reduce((a, r) => a + r.amount, 0), per = rows.length ? Math.floor(total / rows.length) : 0;
+    const menu = MENUS.find(([min]) => per >= min);
+    return `
+      <div class="mt-1 flex items-baseline gap-2 flex-wrap">
+        <span class="text-3xl font-bold tabular-nums">${won(total)}</span>
+        <span class="text-sm text-gray-500">${rows.length}명 · 1명당 ${won(per)}</span>
+      </div>
+      <p class="mt-2 font-medium">${menu
+        ? `${menu[1]} 축하해요! <b class="text-brand">${menu[2]}</b>${eulReul(menu[2])} ${menu[3] || '먹을'} 수 있어요!`
+        : '아직 저금통이 비어 있어요. 모두 열심히 하고 있다는 뜻! 💪'}</p>`;
+  })();
+  return `
+  <section class="glass rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex gap-3">
+    <div class="w-10 h-10 shrink-0 rounded-2xl bg-pink-100 grid place-items-center text-xl">🐷</div>
+    <div class="flex-1 min-w-0">
+      <h2 class="text-sm font-semibold text-gray-600">저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></h2>
+      ${body}
+    </div>
+  </section>`;
+}
 function noticeBanner() {
   return `
   <button data-action="notice" class="glass w-full rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex items-start gap-3 text-left">
@@ -707,6 +750,7 @@ function homeView() {
   const ts = todoStats(today), q = ui.quote;
   return `
   ${noticeBanner()}
+  ${piggyBank()}
   <div class="grid gap-4 lg:gap-6 lg:grid-cols-5">
     <section class="glass-hero rounded-[2rem] p-6 md:p-8 lg:col-span-3 flex flex-col lg:min-h-[440px]">
       <div class="flex items-center justify-between">
