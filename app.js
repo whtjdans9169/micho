@@ -815,28 +815,41 @@ function todoView() {
 // 가운데 카메라 배너: 오늘은 찍고, 지난 날은 그날 올린 인증샷을 보여준다
 function proofBanner(key) {
   const mine = myProofs.find((p) => p.date === key);
-  const camera = (label) => `<input type="file" accept="image/*" capture="environment" data-input="proof" class="hidden">${label}`;
+  // 카메라로 바로 찍기(capture) 또는 사진 보관함에서 고르기
+  const pick = (camera, cls, label) => `
+    <label class="${cls} cursor-pointer">
+      <input type="file" accept="image/*" ${camera ? 'capture="environment"' : ''} data-input="proof" class="hidden">${label}
+    </label>`;
   if (mine) {
+    const small = 'px-3.5 py-2 rounded-full bg-white/80 text-sm font-semibold text-center whitespace-nowrap';
     return `
     <div class="glass mt-4 rounded-3xl p-3 flex items-center gap-4">
       <button data-action="openproof" data-id="${mine.id}" class="shrink-0"><img src="${mine.thumb}" alt="" class="w-20 aspect-[4/5] rounded-2xl object-cover"></button>
       <div class="flex-1 min-w-0">
         <div class="font-bold text-brand"><i class="fa-solid fa-circle-check mr-1"></i>인증 완료</div>
-        <div class="mt-0.5 text-sm text-gray-500">${fmtClock(mine.at)}에 올렸어요</div>
+        <div class="mt-0.5 text-sm text-gray-500 whitespace-nowrap">${fmtClock(mine.at)}</div>
       </div>
-      ${key === today ? `<label class="px-4 py-2 rounded-full bg-white/80 text-sm font-semibold cursor-pointer">${camera('다시 찍기')}</label>` : ''}
+      ${key === today ? `
+      <div class="flex flex-col gap-1.5">
+        ${pick(true, small, '<i class="fa-solid fa-camera mr-1"></i>다시 찍기')}
+        ${pick(false, small, '<i class="fa-regular fa-image mr-1"></i>앨범')}
+      </div>` : ''}
     </div>`;
   }
   if (key !== today) return '<div class="glass mt-4 rounded-3xl p-4 text-center text-sm text-gray-500"><i class="fa-solid fa-camera mr-1.5"></i>이날은 인증샷이 없어요</div>';
+  const big = 'flex-1 py-3 rounded-2xl font-semibold text-center';
   return `
-  <label class="glass mt-4 rounded-3xl p-6 flex flex-col items-center gap-3 text-center cursor-pointer">
+  <div class="glass mt-4 rounded-3xl p-6 flex flex-col items-center gap-3 text-center">
     <span class="btn w-16 h-16 rounded-full grid place-items-center text-2xl"><i class="fa-solid fa-camera"></i></span>
     <span>
-      <span class="block text-lg font-bold">오늘의 인증샷 찍기</span>
+      <span class="block text-lg font-bold">오늘의 인증샷</span>
       <span class="block mt-0.5 text-sm text-gray-500">할 일을 다 끝냈다면 사진으로 인증해요</span>
     </span>
-    ${camera('')}
-  </label>`;
+    <div class="mt-1 w-full flex gap-2">
+      ${pick(true, `btn ${big}`, '<i class="fa-solid fa-camera mr-1.5"></i>사진 찍기')}
+      ${pick(false, `bg-white/80 ${big}`, '<i class="fa-regular fa-image mr-1.5"></i>앨범에서 고르기')}
+    </div>
+  </div>`;
 }
 
 // ---------- 통계 ----------
