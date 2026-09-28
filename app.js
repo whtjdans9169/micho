@@ -275,7 +275,6 @@ let allData = null;    // 벌금 계산용 모두의 기록 (통계 화면을 �
 let proofIds = new Set(); // 벌금 계산용 모두의 인증샷 ('사용자_날짜')
 let unwatch = [];      // 실시간 구독 해제 함수들
 let feedOff = null;    // 인증샷 피드 구독 해제 (더 보기로 개수가 바뀌면 다시 구독)
-let lastRev = null;    // 내가 마지막으로 저장한 버전 (내 저장이 되돌아온 것은 무시)
 let today = dkey();
 const ui = {
   view: 'home',
@@ -319,7 +318,8 @@ function newData() {
   };
 }
 function save() {
-  D.rev = lastRev = uid();
+  // 저장 순번: 지금까지 본 것보다 항상 크게 (기기마다 시계가 조금 달라도 순서가 꼬이지 않게)
+  D.savedAt = Math.max(Date.now(), (D.savedAt || 0) + 1);
   return fb.f.setDoc(docRef('data', me), JSON.parse(JSON.stringify(D))).catch((e) => toast('저장하지 못했어요 · ' + friendly(e)));
 }
 async function updateProfile(patch, doneMsg) {
@@ -443,7 +443,8 @@ async function enter(id) {
     // 다른 기기(폰 ↔ PC)에서 바꾼 내용을 바로 반영
     f.onSnapshot(docRef('data', id), (snap) => {
       const remote = snap.data();
-      if (!remote || remote.rev === lastRev) return;
+      // 내가 이미 가진 것보다 새로운 저장(다른 기기)만 반영. 늦게 도착한 옛날 데이터나 내 저장의 메아리는 무시
+      if (!remote || (remote.savedAt || 0) <= (D.savedAt || 0)) return;
       D = Object.assign(newData(), remote);
       refreshView();
     }),
