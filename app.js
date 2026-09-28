@@ -613,6 +613,7 @@ function render() {
       </main>`;
     updateLive();
     hydrateProofs();
+    mountSortables();
   }
 }
 
@@ -1277,25 +1278,25 @@ async function fileUrl(f) {
 }
 
 // ---------- 나 (프로필 · 등급) ----------
-// D-Day 목록: ▲로 순서를 올리고, 맨 윗줄이 홈 D-Day. '나' 화면 카드와 홈 D-Day 버튼 창에서 함께 쓴다
+// D-Day 목록: 꾹 눌러서 끌어 옮기고, 맨 윗줄이 홈 D-Day. '나' 화면 카드와 홈 D-Day 버튼 창에서 함께 쓴다
 function ddayManager() {
   const list = ddayList();
   return `
     <div class="flex items-center justify-between gap-2">
       <h3 class="font-semibold">D-Day</h3>
-      <span class="text-xs text-gray-500">맨 윗줄이 홈에 보여요</span>
+      <span class="text-xs text-gray-500">꾹 눌러 옮기기 · 맨 윗줄이 홈에 보여요</span>
     </div>
-    <ul class="mt-3 space-y-2">${list.map((x, i) => `
-      <li class="flex items-center gap-2.5 p-2.5 rounded-2xl ${i === 0 ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
+    <ul data-sortable="dday" class="sortable mt-3 space-y-2">${list.map((x, i) => `
+      <li data-id="${x.id}" class="flex items-center gap-2.5 p-2.5 rounded-2xl cursor-grab ${i === 0 ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
         <span class="w-16 shrink-0 text-center font-bold tabular-nums ${i === 0 ? 'text-brand' : ''}">${ddayText(x.date)}</span>
         <div class="flex-1 min-w-0">
           <div class="font-medium truncate">${esc(x.name)}${x.shared ? ' <span class="text-[11px] font-normal text-gray-500">모두 함께</span>' : ''}</div>
           <div class="text-xs text-gray-500">${fmtDateKo(parseKey(x.date))}${i === 0 ? ' · <b class="text-brand">홈에 표시</b>' : ''}</div>
         </div>
-        ${i > 0 ? `<button data-action="ddayup" data-id="${x.id}" class="w-8 h-8 shrink-0 rounded-full bg-white/80" aria-label="위로 올리기"><i class="fa-solid fa-arrow-up text-sm"></i></button>` : ''}
         ${x.shared
           ? '<button data-action="dday" class="w-8 h-8 shrink-0 rounded-full text-gray-500" aria-label="시험일 바꾸기"><i class="fa-solid fa-pen text-sm"></i></button>'
           : `<button data-action="ddaydel" data-id="${x.id}" class="w-8 h-8 shrink-0 rounded-full text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>`}
+        <i class="fa-solid fa-grip-lines w-6 text-center text-gray-400" aria-hidden="true"></i>
       </li>`).join('')}
     </ul>
     <form data-form="ddayadd" class="mt-3 space-y-2">
@@ -1308,8 +1309,33 @@ function ddayManager() {
 }
 // 목록이 바뀌면: 창으로 열려 있으면 창을 다시 그리고, 아니면 화면을 다시 그린다
 function refreshDdays() {
-  if (ui.ddayModal && $('#modal').innerHTML) openModal(ddayModalHtml());
+  if (ui.ddayModal && $('#modal').innerHTML) { openModal(ddayModalHtml()); mountSortables(); }
   else render();
+}
+// 화면에 있는 D-Day 목록에 '꾹 눌러서 옮기기'를 붙인다 (휴대폰은 꾹 누르기, PC는 바로 끌기)
+function mountSortables() {
+  if (!window.Sortable) return;
+  document.querySelectorAll('[data-sortable="dday"]').forEach((ul) => {
+    Sortable.create(ul, {
+      animation: 180,
+      delay: 300,
+      delayOnTouchOnly: true,
+      touchStartThreshold: 6,
+      forceFallback: true, // 브라우저 기본 끌어놓기 대신 모든 기기에서 같은 방식으로 끌기
+      fallbackClass: 'sort-chosen',
+      filter: 'button',
+      preventOnFilter: false,
+      chosenClass: 'sort-chosen',
+      ghostClass: 'sort-ghost',
+      onEnd: (e) => {
+        if (e.oldIndex === e.newIndex) return;
+        const byId = Object.fromEntries(ddayList().map((x) => [x.id, x]));
+        saveDdays([...ul.children].map((li) => byId[li.dataset.id]));
+        if (navigator.vibrate) navigator.vibrate(10);
+        refreshDdays();
+      },
+    });
+  });
 }
 const ddayModalHtml = () => `
   <div class="flex justify-end -mt-2 -mr-2"><button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button></div>
@@ -1748,14 +1774,7 @@ const actions = {
   subjects: (el) => { ui.paletteFor = el.dataset.id || null; subjectModal(); },
   dday: () => ddayModal(),
   finesettings: () => fineModal(),
-  ddaylist: () => { ui.ddayModal = true; openModal(ddayModalHtml()); },
-  ddayup: (el) => {
-    const list = ddayList(), i = list.findIndex((x) => x.id === el.dataset.id);
-    if (i <= 0) return;
-    [list[i - 1], list[i]] = [list[i], list[i - 1]];
-    saveDdays(list);
-    refreshDdays();
-  },
+  ddaylist: () => { ui.ddayModal = true; openModal(ddayModalHtml()); mountSortables(); },
   ddaydel: (el) => {
     const x = ddayList().find((d) => d.id === el.dataset.id);
     if (!x || x.shared || !confirm(`'${x.name}' D-Day를 삭제할까요?`)) return;
@@ -1938,7 +1957,7 @@ const forms = {
     if (!name || !date) return;
     saveDdays([...ddayList(), { id: uid(), name, date }]);
     refreshDdays();
-    toast(`'${name}' D-Day를 추가했어요. ▲로 올리면 홈에 보여요`);
+    toast(`'${name}' D-Day를 추가했어요. 꾹 눌러 맨 위로 옮기면 홈에 보여요`);
   },
   goal: (f) => {
     D.goalHours = Math.min(16, Math.max(0.5, Number(f.elements.hours.value) || 0));

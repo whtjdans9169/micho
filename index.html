@@ -157,6 +157,11 @@
     html.dark .hover\:bg-red-50:hover { background-color: rgba(239, 68, 68, .15); }
     html.dark .bg-pink-100 { background-color: rgba(244, 114, 182, .18); }
 
+    /* 꾹 눌러서 순서 바꾸기 (D-Day 목록) */
+    .sortable li { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    .sort-chosen { transform: scale(1.03); box-shadow: 0 14px 30px -10px rgba(15, 107, 69, .45) !important; }
+    .sort-ghost { opacity: .35; }
+
     input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
     input[type="color"]::-webkit-color-swatch { border: none; border-radius: 10px; }
   </style>
@@ -164,6 +169,7 @@
 <body class="antialiased">
   <div id="app"></div>
   <div id="modal"></div>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
