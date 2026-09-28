@@ -236,8 +236,8 @@ function hydrateProofs() {
   });
 }
 
-// ---------- 벌금 (모두의 할 일 기록으로 계산) ----------
-async function loadFines() {
+// ---------- 모두의 기록 (벌금 현황 · 멤버 등급 계산용, 통계 · 나 화면을 열 때마다 새로 불러옴) ----------
+async function loadEveryone() {
   try {
     const [p, snap, proofSnap] = await Promise.all([
       loadProfiles(),
@@ -248,9 +248,9 @@ async function loadFines() {
     proofIds = new Set(proofSnap.docs.map((d) => d.id));
     allData = {};
     snap.forEach((d) => { allData[d.id] = d.data(); });
-    if (ui.view === 'stats') refreshView();
+    if (ui.view === 'stats' || ui.view === 'me') refreshView();
   } catch (e) {
-    toast('벌금 현황을 불러오지 못했어요 · ' + friendly(e));
+    toast('모두의 기록을 불러오지 못했어요 · ' + friendly(e));
   }
 }
 
@@ -368,11 +368,14 @@ function todoStats(key) {
   const t = todosOn(key), done = t.filter((x) => x.done).length;
   return { done, total: t.length, pct: t.length ? Math.round((done / t.length) * 100) : 0 };
 }
-const isAchieved = (key) => { const s = todoStats(key); return s.total > 0 && s.done === s.total; };
+const isAchieved = (key, todos = D.todos) => { const t = todos[key] || []; return t.length > 0 && t.every((x) => x.done); };
 
-function gradeInfo() {
-  const att = Object.values(totalsByDay()).filter((v) => v >= 60000).length;
-  const ach = Object.keys(D.todos).filter(isAchieved).length;
+// 등급: 내 것은 지금 켜진 타이머까지, 다른 멤버는 저장된 기록으로 계산
+function gradeInfo(data = D) {
+  const totals = data === D ? totalsByDay() : (data.sessions || []).reduce((m, x) => { m[x.d] = (m[x.d] || 0) + x.e - x.s; return m; }, {});
+  const todos = data.todos || {};
+  const att = Object.values(totals).filter((v) => v >= 60000).length;
+  const ach = Object.keys(todos).filter((k) => isAchieved(k, todos)).length;
   let i = 0;
   GRADES.forEach((g, j) => { if (att >= g.att && ach >= g.ach) i = j; });
   return { att, ach, grade: GRADES[i], next: GRADES[i + 1] || null };
@@ -535,7 +538,7 @@ function render() {
 
 function go(view) {
   if (view === 'todo') ui.todoDate = today;
-  if (view === 'stats') loadFines(); // 열 때마다 모두의 최신 기록으로 벌금을 다시 계산
+  if (view === 'stats' || view === 'me') loadEveryone(); // 벌금 · 멤버 등급을 최신 기록으로 다시 계산
   ui.view = view;
   render();
   window.scrollTo(0, 0);
@@ -1089,6 +1092,28 @@ async function fileUrl(f) {
 }
 
 // ---------- 나 (프로필 · 등급) ----------
+// 가입한 멤버 명단: 등급이 높은 순 → 닉네임 순
+function membersCard() {
+  const rank = (g) => GRADES.indexOf(g);
+  const rows = Object.entries(profiles).map(([id, p]) => ({
+    id, nick: p.nick || '이름 없음', photo: p.photo,
+    grade: id === me ? gradeInfo().grade : allData ? gradeInfo(allData[id] || {}).grade : null,
+  })).sort((a, b) => (b.grade ? rank(b.grade) : -1) - (a.grade ? rank(a.grade) : -1) || a.nick.localeCompare(b.nick));
+  return `
+  <section class="${CARD}">
+    <h3 class="font-semibold">멤버 <span class="text-sm font-normal text-gray-500">${rows.length}명</span></h3>
+    <ul class="mt-3 space-y-2 max-h-80 overflow-y-auto">${rows.map((r) => `
+      <li class="flex items-center gap-3 p-2 rounded-2xl ${r.id === me ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
+        ${avatar(r, 'w-9 h-9 text-sm')}
+        <span class="flex-1 min-w-0 font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span>
+        ${r.grade
+          ? `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${rank(r.grade) ? 'btn' : 'bg-white/80 text-gray-600'}">${r.grade.name}</span>`
+          : '<i class="fa-solid fa-spinner fa-spin text-gray-400 text-xs"></i>'}
+      </li>`).join('')}
+    </ul>
+  </section>`;
+}
+
 function profileView() {
   const u = myProfile(), g = gradeInfo(), q = allQuotes();
   const bar = (label, v, max) => `
@@ -1135,6 +1160,7 @@ function profileView() {
       </div>
       <button data-action="dday" class="btn px-4 py-2 rounded-full text-sm font-semibold">${ddayLabel()}</button>
     </section>
+    ${membersCard()}
     <section class="${CARD}">
       <h3 class="font-semibold">등급 기준</h3>
       <ul class="mt-3 space-y-1.5 text-sm">${GRADES.map((x) => `
