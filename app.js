@@ -1,7 +1,7 @@
 'use strict';
 
 // ============================================================
-// 저장소 (LocalStorage)
+// 브라우저 저장소 (LocalStorage)
 // ============================================================
 const store = {
   get(key, fallback) {
@@ -18,13 +18,19 @@ const KEY = {
   users: 'micho:users',
   quotes: 'micho:quotes',
   remember: 'micho:remember',
-  data: (nick) => 'micho:data:' + nick,
+  data: (id) => 'micho:data:' + id,
 };
 
 // ============================================================
 // 상수
 // ============================================================
-const COLORS = ['#D97471', '#8E7CC3', '#EBC04A', '#5DA9E9', '#6CC08B', '#F08A5D', '#B56576', '#4A5568'];
+const BRAND = '#2E9E6B';
+const MATE_COLOR = '#8E7CC3';
+const DEFAULT_COLORS = ['#D97471', '#8E7CC3', '#EBC04A'];
+const PALETTE = [
+  '#D97471', '#E8896B', '#F08A5D', '#EBC04A', '#C9B458', '#8BC34A', '#6CC08B', '#2E9E6B',
+  '#4DB6AC', '#5DA9E9', '#3F7FD6', '#8E7CC3', '#B07CC6', '#E48AB4', '#B56576', '#4A5568',
+];
 
 // 출석: 1분 이상 공부한 날 / 달성: 그날 할 일을 100% 끝낸 날
 const GRADES = [
@@ -44,11 +50,11 @@ const SEED_QUOTES = [
 
 // 잔디 색 단계 [최소 시간(h), 배경, 글자]
 const LEVELS = [
-  [12, '#6B2A0A', '#fff'],
-  [10, '#B4501A', '#fff'],
-  [7, '#E8702F', '#fff'],
-  [4, '#F59A6B', '#fff'],
-  [0, '#FDE3D2', '#7C2D12'],
+  [12, '#14532D', '#fff'],
+  [10, '#1E7A4C', '#fff'],
+  [7, '#3FA46F', '#fff'],
+  [4, '#8FD3AC', '#14532D'],
+  [0, '#DDF3E6', '#14532D'],
 ];
 
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
@@ -66,6 +72,15 @@ const parseKey = (k) => { const [y, m, d] = k.split('-').map(Number); return new
 const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 const mondayOf = (d) => addDays(d, -((d.getDay() + 6) % 7));
 const monthOf = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+const safeColor = (c) => (/^#[0-9a-f]{6}$/i.test(c) ? c : '#9CA3AF');
+const safePhoto = (p) => (typeof p === 'string' && p.startsWith('data:image/') ? p : '');
+
+// 키 순서와 상관없이 같은 데이터인지 비교하기 위한 직렬화
+function stable(v) {
+  if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+  if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+  return JSON.stringify(v);
+}
 
 function fmtHMS(ms) {
   const t = Math.floor(ms / 1000);
@@ -86,18 +101,165 @@ function fmtClock(ts) {
 const fmtDate = (d) => `${d.getMonth() + 1}. ${d.getDate()} (${WD[d.getDay()]})`;
 const fmtDateKo = (d) => `${d.getMonth() + 1}월 ${d.getDate()}일 (${WD[d.getDay()]})`;
 
-// 브라우저에만 저장하므로 보안용이 아니라 비밀번호를 그대로 남기지 않기 위한 해시
 async function hash(text) {
   if (!window.crypto?.subtle) return 'plain:' + text;
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// 갤러리에서 고른 사진을 256px 정사각형으로 줄인다
+function readPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const S = 256, c = document.createElement('canvas'), m = Math.min(img.width, img.height);
+      c.width = c.height = S;
+      c.getContext('2d').drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, S, S);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('이 사진은 읽을 수 없어요. 다른 사진을 골라주세요.')); };
+    img.src = url;
+  });
+}
+
+function toast(msg) {
+  const el = document.createElement('div');
+  el.className = 'fixed left-1/2 -translate-x-1/2 bottom-28 z-[60] px-4 py-2.5 rounded-full bg-gray-900/90 text-white text-sm shadow-lg whitespace-nowrap';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2400);
+}
+
+// ============================================================
+// 저장 방식 1: 이 기기에만 저장 (Firebase 설정이 없을 때)
+// ============================================================
+const LocalBackend = {
+  name: 'local',
+  async restore() {
+    const n = store.get(KEY.remember, null) || sessionStore.get();
+    return n && store.get(KEY.users, {})[n] ? n : null;
+  },
+  async signUp(nick, pw, profile, remember) {
+    const all = store.get(KEY.users, {});
+    if (all[nick]) throw new Error('이미 있는 닉네임이에요.');
+    all[nick] = { ...profile, hash: await hash(nick + '\n' + pw), createdAt: Date.now() };
+    store.set(KEY.users, all);
+    this.remember(nick, remember);
+    return nick;
+  },
+  async signIn(nick, pw, remember) {
+    const u = store.get(KEY.users, {})[nick];
+    if (!u) throw new Error('없는 닉네임이에요. "처음이에요"에서 가입해주세요.');
+    if (u.hash !== await hash(nick + '\n' + pw)) throw new Error('비밀번호가 맞지 않아요.');
+    this.remember(nick, remember);
+    return nick;
+  },
+  remember(nick, remember) {
+    if (remember) store.set(KEY.remember, nick); else store.remove(KEY.remember);
+    sessionStore.set(nick);
+  },
+  async signOut() { store.remove(KEY.remember); sessionStore.set(null); },
+  async loadProfiles() {
+    const m = {};
+    for (const [n, u] of Object.entries(store.get(KEY.users, {}))) m[n] = { nick: n, goal: u.goal || '', motto: u.motto || '', photo: u.photo || '' };
+    return m;
+  },
+  async saveProfile(id, patch) {
+    const all = store.get(KEY.users, {});
+    all[id] = { ...all[id], ...patch };
+    store.set(KEY.users, all);
+  },
+  async loadData(id) { return store.get(KEY.data(id), null); },
+  async saveData(id, data) { store.set(KEY.data(id), data); },
+  async loadQuotes() { return store.get(KEY.quotes, []); },
+  async addQuote(q) { const list = store.get(KEY.quotes, []); list.push(q); store.set(KEY.quotes, list); },
+  watchData() { return () => {}; },
+};
+
+// ============================================================
+// 저장 방식 2: Firebase (스터디원끼리 공유)
+// ============================================================
+async function createFirebaseBackend(config) {
+  const base = 'https://www.gstatic.com/firebasejs/12.9.0/';
+  const [appSdk, authSdk, fs] = await Promise.all([
+    import(base + 'firebase-app.js'),
+    import(base + 'firebase-auth.js'),
+    import(base + 'firebase-firestore.js'),
+  ]);
+  const app = appSdk.initializeApp(config);
+  const auth = authSdk.getAuth(app);
+  const db = fs.getFirestore(app);
+
+  // Firebase 로그인은 이메일이 필요해서, 닉네임으로 내부용 주소를 만든다 (메일은 보내지 않음)
+  const emailOf = async (nick) => (await hash('micho:' + nick)).slice(0, 32) + '@micho.app';
+  const usePersistence = (remember) => authSdk.setPersistence(auth, remember ? authSdk.browserLocalPersistence : authSdk.browserSessionPersistence);
+  const friendly = (e) => new Error({
+    'auth/email-already-in-use': '이미 있는 닉네임이에요.',
+    'auth/invalid-credential': '닉네임 또는 비밀번호가 맞지 않아요.',
+    'auth/invalid-login-credentials': '닉네임 또는 비밀번호가 맞지 않아요.',
+    'auth/wrong-password': '닉네임 또는 비밀번호가 맞지 않아요.',
+    'auth/user-not-found': '없는 닉네임이에요. "처음이에요"에서 가입해주세요.',
+    'auth/weak-password': '비밀번호는 6자 이상이어야 해요.',
+    'auth/too-many-requests': '시도가 너무 많아요. 잠시 후 다시 해주세요.',
+    'auth/network-request-failed': '인터넷 연결을 확인해주세요.',
+    'auth/operation-not-allowed': 'Firebase에서 이메일/비밀번호 로그인이 꺼져 있어요.',
+    'permission-denied': 'Firebase 보안 규칙 때문에 막혔어요.',
+  }[e.code] || '문제가 생겼어요: ' + (e.code || e.message));
+
+  return {
+    name: 'firebase',
+    restore: () => new Promise((resolve) => {
+      const off = authSdk.onAuthStateChanged(auth, (u) => { off(); resolve(u ? u.uid : null); });
+    }),
+    async signUp(nick, pw, profile, remember) {
+      try {
+        await usePersistence(remember);
+        const cred = await authSdk.createUserWithEmailAndPassword(auth, await emailOf(nick), pw);
+        await fs.setDoc(fs.doc(db, 'users', cred.user.uid), { ...profile, createdAt: Date.now() });
+        return cred.user.uid;
+      } catch (e) { throw friendly(e); }
+    },
+    async signIn(nick, pw, remember) {
+      try {
+        await usePersistence(remember);
+        return (await authSdk.signInWithEmailAndPassword(auth, await emailOf(nick), pw)).user.uid;
+      } catch (e) { throw friendly(e); }
+    },
+    signOut: () => authSdk.signOut(auth),
+    async loadProfiles() {
+      const m = {};
+      (await fs.getDocs(fs.collection(db, 'users'))).forEach((d) => { m[d.id] = d.data(); });
+      return m;
+    },
+    saveProfile: (id, patch) => fs.setDoc(fs.doc(db, 'users', id), patch, { merge: true }).catch((e) => { throw friendly(e); }),
+    async loadData(id) {
+      const snap = await fs.getDoc(fs.doc(db, 'data', id));
+      return snap.exists() ? snap.data() : null;
+    },
+    saveData: (id, data) => fs.setDoc(fs.doc(db, 'data', id), data).catch((e) => { throw friendly(e); }),
+    async loadQuotes() {
+      const snap = await fs.getDocs(fs.collection(db, 'quotes'));
+      return snap.docs.map((d) => d.data()).sort((a, b) => (a.at || 0) - (b.at || 0));
+    },
+    addQuote: (q) => fs.addDoc(fs.collection(db, 'quotes'), { ...q, at: Date.now() }),
+    // 다른 기기(폰 ↔ PC)에서 바꾼 내용을 바로 반영
+    watchData: (id, onChange) => fs.onSnapshot(fs.doc(db, 'data', id), (snap) => {
+      if (!snap.metadata.hasPendingWrites && snap.exists()) onChange(snap.data());
+    }),
+  };
+}
+
 // ============================================================
 // 상태
 // ============================================================
-let me = null; // 로그인한 닉네임
-let D = null;  // 로그인한 사용자 데이터
+let backend = null;
+let me = null;         // 로그인한 사용자 id
+let D = null;          // 내 공부 기록 · 할 일
+let profiles = {};     // id → { nick, goal, motto, photo }
+let quoteList = [];    // 사용자들이 등록한 명언
+let mateData = null;   // 스터디원 id → 데이터 (달력에서 켤 때 불러옴)
+let unwatch = null;
 let calendar = null;
 const ui = {
   view: 'home',
@@ -109,19 +271,20 @@ const ui = {
   calDate: null,
   mates: false,
   quote: null,
+  paletteFor: null,
   authMode: 'login',
   authError: '',
   lastNick: '',
+  fatal: '',
 };
 
-const users = () => store.get(KEY.users, {});
-function quotes() {
-  let q = store.get(KEY.quotes, null);
-  if (!Array.isArray(q)) { q = SEED_QUOTES.slice(); store.set(KEY.quotes, q); }
-  return q;
+const myProfile = () => profiles[me] || { nick: '', goal: '', motto: '', photo: '' };
+function allQuotes() {
+  const seen = new Set();
+  return [...SEED_QUOTES, ...quoteList].filter((q) => q?.text && !seen.has(q.text) && seen.add(q.text));
 }
 function pickQuote(prev) {
-  const q = quotes();
+  const q = allQuotes();
   if (q.length < 2) return q[0] || null;
   let x;
   do { x = q[Math.floor(Math.random() * q.length)]; } while (prev && x.text === prev.text);
@@ -129,19 +292,17 @@ function pickQuote(prev) {
 }
 function newData() {
   return {
-    subjects: [
-      { id: uid(), name: '1교시', color: COLORS[0] },
-      { id: uid(), name: '2교시', color: COLORS[1] },
-      { id: uid(), name: '3교시', color: COLORS[2] },
-    ],
+    subjects: DEFAULT_COLORS.map((color, i) => ({ id: uid(), name: `${i + 1}교시`, color })),
     sessions: [], // { sid, s, e, d } — 날짜(d)별로 잘라서 저장
     todos: {},    // { 'YYYY-MM-DD': [{ id, text, done }] }
     running: null, // { sid, s }
     examDate: '',
   };
 }
-const loadData = (nick) => Object.assign(newData(), store.get(KEY.data(nick), {}));
-const save = () => store.set(KEY.data(me), D);
+function save() {
+  const snapshot = JSON.parse(JSON.stringify(D));
+  Promise.resolve(backend.saveData(me, snapshot)).catch((e) => toast('저장하지 못했어요. ' + e.message));
+}
 
 // ============================================================
 // 공부 기록 계산
@@ -205,11 +366,77 @@ function ddayLabel() {
 }
 
 // ============================================================
+// 로그인 흐름
+// ============================================================
+async function enter(id) {
+  const [p, data, q] = await Promise.all([backend.loadProfiles(), backend.loadData(id), backend.loadQuotes()]);
+  me = id;
+  profiles = p;
+  quoteList = q || [];
+  mateData = null;
+  D = Object.assign(newData(), data || {});
+  if (!data) save();
+  if (!profiles[me]) profiles[me] = { nick: ui.lastNick || '나', goal: '', motto: '', photo: '' };
+  unwatch?.();
+  unwatch = backend.watchData(id, (remote) => {
+    if (stable(remote) === stable(D)) return;
+    D = Object.assign(newData(), remote);
+    if (!$('#modal').innerHTML) render();
+  });
+  Object.assign(ui, { authError: '', authMode: 'login', view: 'home', mates: false, paletteFor: null, quote: pickQuote() });
+  render();
+}
+
+async function onAuth(form) {
+  const f = new FormData(form);
+  const nick = String(f.get('nick') || '').trim();
+  const pw = String(f.get('pw') || '');
+  const remember = !!f.get('remember');
+  ui.lastNick = nick;
+  if (!nick) return authFail('닉네임을 입력해주세요.');
+  const btn = form.querySelector('[data-submit]');
+  btn.disabled = true;
+  btn.textContent = '잠시만요…';
+  try {
+    let id;
+    if (ui.authMode === 'signup') {
+      const goal = String(f.get('goal') || '').trim();
+      const motto = String(f.get('motto') || '').trim();
+      id = await backend.signUp(nick, pw, { nick, goal, motto, photo: '' }, remember);
+      // 첫 로그인 시 좌우명을 모두의 명언에 등록
+      if (motto) await backend.addQuote({ text: motto, by: nick, uid: id });
+    } else {
+      id = await backend.signIn(nick, pw, remember);
+    }
+    await enter(id);
+  } catch (e) {
+    authFail(e.message);
+  }
+}
+function authFail(msg) { ui.authError = msg; render(); }
+
+async function logout() {
+  if (!confirm('로그아웃할까요?')) return;
+  commitRunning();
+  try { await backend.saveData(me, JSON.parse(JSON.stringify(D))); } catch {}
+  unwatch?.();
+  unwatch = null;
+  await backend.signOut();
+  me = null;
+  D = null;
+  profiles = {};
+  ui.lastNick = '';
+  render();
+}
+
+// ============================================================
 // 화면
 // ============================================================
 function render() {
   if (calendar) { ui.calDate = calendar.getDate(); calendar.destroy(); calendar = null; }
   const app = $('#app');
+  if (ui.fatal) { app.innerHTML = fatalView(); return; }
+  if (!backend) { app.innerHTML = loadingView(); return; }
   if (!me) { app.innerHTML = loginView(); return; }
   const views = { home: homeView, todo: todoView, calendar: calendarView, stats: statsView, me: profileView };
   app.innerHTML = views[ui.view]() + navView();
@@ -230,6 +457,28 @@ function openTodo(key) {
   window.scrollTo(0, 0);
 }
 
+function avatar(p, size, icon) {
+  const photo = safePhoto(p?.photo);
+  return photo
+    ? `<img src="${esc(photo)}" alt="" class="${size} rounded-full object-cover">`
+    : `<div class="${size} rounded-full bg-white/20 grid place-items-center ${icon}"><i class="fa-solid fa-compass-drafting"></i></div>`;
+}
+
+const loadingView = () => `
+  <div class="min-h-screen grid place-items-center text-brand">
+    <i class="fa-solid fa-spinner fa-spin text-3xl"></i>
+  </div>`;
+
+const fatalView = () => `
+  <div class="min-h-screen grid place-items-center px-8 text-center">
+    <div>
+      <i class="fa-solid fa-triangle-exclamation text-3xl text-brand"></i>
+      <p class="mt-4 font-semibold">서버에 연결하지 못했어요</p>
+      <p class="mt-2 text-sm text-gray-500">${esc(ui.fatal)}</p>
+      <button onclick="location.reload()" class="mt-6 px-5 py-2.5 rounded-xl bg-brand text-white font-semibold">다시 시도</button>
+    </div>
+  </div>`;
+
 // ---------- 로그인 ----------
 function loginView() {
   const signup = ui.authMode === 'signup';
@@ -239,6 +488,7 @@ function loginView() {
       <span class="text-sm font-medium text-gray-600">${label}</span>
       <input name="${name}" type="${type}" placeholder="${ph}" ${extra} class="mt-1.5 w-full px-4 py-3 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
     </label>`;
+  const shared = backend.name === 'firebase';
   return `
   <div class="min-h-screen flex flex-col">
     <div class="bg-brand text-white px-6 pt-16 pb-12">
@@ -249,51 +499,16 @@ function loginView() {
     <form data-form="auth" class="flex-1 px-6 py-8 space-y-4">
       <div class="flex p-1 rounded-2xl bg-gray-100">${tab('login', '로그인')}${tab('signup', '처음이에요')}</div>
       ${field('nick', '닉네임', 'text', '닉네임', `required maxlength="20" autocomplete="username" value="${esc(ui.lastNick)}"`)}
-      ${field('pw', '비밀번호', 'password', '4자 이상', `required minlength="4" autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
+      ${field('pw', '비밀번호', 'password', signup ? '6자 이상' : '비밀번호', `required ${signup ? 'minlength="6"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
       ${signup ? field('goal', '시험 전 나의 목표', 'text', '예) 올해 3과목 모두 합격!', 'maxlength="60"') + field('motto', '나의 명언 / 좌우명', 'text', '예) 오늘 걷지 않으면 내일은 뛰어야 한다', 'maxlength="80"') : ''}
       <label class="flex items-center gap-2 text-sm text-gray-600">
-        <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#EE7F3E]">계정 기억하기
+        <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#2E9E6B]">계정 기억하기
       </label>
       ${ui.authError ? `<p class="text-sm text-red-500">${esc(ui.authError)}</p>` : ''}
-      <button class="w-full py-3.5 rounded-xl bg-brand text-white font-semibold text-lg">${signup ? '시작하기' : '로그인'}</button>
-      <p class="text-xs text-gray-400 text-center leading-relaxed">계정과 기록은 이 기기의 브라우저에만 저장돼요.</p>
+      <button data-submit class="w-full py-3.5 rounded-xl bg-brand text-white font-semibold text-lg disabled:opacity-60">${signup ? '시작하기' : '로그인'}</button>
+      <p class="text-xs text-gray-400 text-center leading-relaxed">${shared ? '스터디원들과 기록이 공유돼요.' : '계정과 기록은 이 기기의 브라우저에만 저장돼요.'}</p>
     </form>
   </div>`;
-}
-
-async function onAuth(form) {
-  const f = new FormData(form);
-  const nick = String(f.get('nick') || '').trim();
-  const pw = String(f.get('pw') || '');
-  ui.lastNick = nick;
-  if (!nick) return authFail('닉네임을 입력해주세요.');
-  const all = users();
-  const h = await hash(nick + '\n' + pw);
-  if (ui.authMode === 'login') {
-    if (!all[nick]) return authFail('없는 닉네임이에요. "처음이에요"에서 가입해주세요.');
-    if (all[nick].hash !== h) return authFail('비밀번호가 맞지 않아요.');
-  } else {
-    if (all[nick]) return authFail('이미 있는 닉네임이에요.');
-    const goal = String(f.get('goal') || '').trim();
-    const motto = String(f.get('motto') || '').trim();
-    all[nick] = { hash: h, goal, motto, createdAt: Date.now() };
-    store.set(KEY.users, all);
-    // 첫 로그인 시 좌우명을 모두의 명언에 등록
-    if (motto) { const q = quotes(); q.push({ text: motto, by: nick }); store.set(KEY.quotes, q); }
-  }
-  if (f.get('remember')) store.set(KEY.remember, nick); else store.remove(KEY.remember);
-  sessionStore.set(nick);
-  signIn(nick);
-}
-function authFail(msg) { ui.authError = msg; render(); }
-function signIn(nick) {
-  me = nick;
-  D = loadData(nick);
-  ui.authError = '';
-  ui.authMode = 'login';
-  ui.view = 'home';
-  ui.quote = pickQuote();
-  render();
 }
 
 // ---------- 홈 (타이머) ----------
@@ -328,12 +543,12 @@ function subjectRow(s) {
   const on = D.running?.sid === s.id;
   return `
   <li class="flex items-center gap-4 py-3.5 ${on ? '-mx-3 px-3 rounded-2xl bg-brand-soft' : ''}">
-    <button data-action="toggle" data-id="${s.id}" class="w-12 h-12 shrink-0 rounded-full grid place-items-center text-white text-lg shadow-sm" style="background:${s.color}" aria-label="${on ? '일시정지' : '시작'}">
+    <button data-action="toggle" data-id="${s.id}" class="w-12 h-12 shrink-0 rounded-full grid place-items-center text-white text-lg shadow-sm" style="background:${safeColor(s.color)}" aria-label="${on ? '일시정지' : '시작'}">
       <i class="fa-solid ${on ? 'fa-pause' : 'fa-play ml-0.5'}"></i>
     </button>
     <span class="flex-1 text-lg font-medium truncate">${esc(s.name)}</span>
     <span class="text-lg tabular-nums" data-live="sub" data-id="${s.id}">0:00:00</span>
-    <button data-action="subjects" class="w-6 text-gray-400" aria-label="과목 편집"><i class="fa-solid fa-ellipsis-vertical"></i></button>
+    <button data-action="subjects" data-id="${s.id}" class="w-6 text-gray-400" aria-label="과목 편집 · 색 바꾸기"><i class="fa-solid fa-ellipsis-vertical"></i></button>
   </li>`;
 }
 
@@ -403,14 +618,14 @@ function calendarView() {
   <header class="px-5 pt-6 pb-2 flex items-center justify-between">
     <h1 class="text-xl font-bold">달력</h1>
     <label class="flex items-center gap-2 text-sm text-gray-600">
-      <input type="checkbox" data-action="mates" ${ui.mates ? 'checked' : ''} class="w-4 h-4 accent-[#EE7F3E]">스터디원 체크리스트
+      <input type="checkbox" data-action="mates" ${ui.mates ? 'checked' : ''} class="w-4 h-4 accent-[#2E9E6B]">스터디원 체크리스트
     </label>
   </header>
   <main class="px-3 pb-36">
     <div id="fc"></div>
     <p class="mt-4 px-2 text-xs text-gray-400 leading-relaxed">
       날짜를 누르면 그날의 할 일로 이동해요.
-      ${ui.mates ? '<br>스터디원 체크리스트는 지금은 이 기기에 가입한 계정끼리만 보여요.' : ''}
+      ${ui.mates && backend.name === 'local' ? '<br>지금은 Firebase가 연결되지 않아 이 기기에 가입한 계정끼리만 보여요.' : ''}
     </p>
   </main>`;
 }
@@ -422,7 +637,7 @@ function mountCalendar() {
   }
   const addTodos = (todos, who, color) => {
     for (const [d, list] of Object.entries(todos || {})) {
-      for (const t of list) {
+      for (const t of list || []) {
         events.push({
           title: (who ? `[${who}] ` : '') + (t.done ? '✓ ' : '') + t.text,
           start: d, allDay: true, order: who ? 2 : 1,
@@ -432,8 +647,10 @@ function mountCalendar() {
       }
     }
   };
-  addTodos(D.todos, '', '#EE7F3E');
-  if (ui.mates) for (const n of Object.keys(users())) if (n !== me) addTodos(loadData(n).todos, n, '#8E7CC3');
+  addTodos(D.todos, '', BRAND);
+  if (ui.mates && mateData) {
+    for (const [id, data] of Object.entries(mateData)) addTodos(data?.todos, profiles[id]?.nick || '스터디원', MATE_COLOR);
+  }
 
   calendar = new FullCalendar.Calendar(document.getElementById('fc'), {
     initialView: 'dayGridMonth',
@@ -444,12 +661,21 @@ function mountCalendar() {
     fixedWeekCount: false,
     dayMaxEvents: 3,
     headerToolbar: { left: 'prev', center: 'title', right: 'today next' },
+    dayCellContent: (arg) => String(arg.date.getDate()),
     eventOrder: 'order,title',
     events,
     dateClick: (info) => openTodo(info.dateStr),
     eventClick: (info) => openTodo(info.event.startStr.slice(0, 10)),
   });
   calendar.render();
+}
+
+async function loadMates() {
+  profiles = { ...(await backend.loadProfiles()), [me]: myProfile() };
+  const ids = Object.keys(profiles).filter((id) => id !== me);
+  const list = await Promise.all(ids.map((id) => backend.loadData(id).catch(() => null)));
+  mateData = {};
+  ids.forEach((id, i) => { mateData[id] = list[i] || {}; });
 }
 
 // ---------- 통계 ----------
@@ -593,14 +819,14 @@ function subjectBreakdown(list) {
   if (!total) return '';
   const rows = Object.entries(bySubject(list)).sort((a, b) => b[1] - a[1]).map(([sid, ms]) => {
     const s = D.subjects.find((x) => x.id === sid) || { name: '삭제된 과목', color: '#CBD5E1' };
-    const p = Math.round((ms / total) * 100);
+    const color = safeColor(s.color), p = Math.round((ms / total) * 100);
     return `
       <li>
         <div class="flex justify-between text-sm">
-          <span class="flex items-center gap-2"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:${s.color}"></i>${esc(s.name)}</span>
+          <span class="flex items-center gap-2"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:${color}"></i>${esc(s.name)}</span>
           <span class="tabular-nums text-gray-600">${fmtHM(ms)} · ${p}%</span>
         </div>
-        <div class="mt-1.5 h-2 rounded-full bg-gray-100 overflow-hidden"><div class="h-full rounded-full" style="width:${p}%;background:${s.color}"></div></div>
+        <div class="mt-1.5 h-2 rounded-full bg-gray-100 overflow-hidden"><div class="h-full rounded-full" style="width:${p}%;background:${color}"></div></div>
       </li>`;
   }).join('');
   return `<section class="bg-white rounded-2xl p-5"><h3 class="font-semibold">과목별 공부 시간</h3><ul class="mt-4 space-y-4">${rows}</ul></section>`;
@@ -608,7 +834,7 @@ function subjectBreakdown(list) {
 
 // ---------- 나 (프로필 · 등급) ----------
 function profileView() {
-  const u = users()[me] || {}, g = gradeInfo(), q = quotes();
+  const u = myProfile(), g = gradeInfo(), q = allQuotes();
   const bar = (label, v, max) => `
     <div class="mt-2">
       <div class="flex justify-between text-xs text-white/80"><span>${label}</span><span>${Math.min(v, max)} / ${max}일</span></div>
@@ -620,10 +846,17 @@ function profileView() {
   return `
   <header class="bg-brand text-white px-5 pt-8 pb-6">
     <div class="flex items-center gap-4">
-      <div class="w-16 h-16 rounded-full bg-white/20 grid place-items-center text-2xl"><i class="fa-solid fa-compass-drafting"></i></div>
-      <div>
-        <div class="text-2xl font-bold">${esc(me)}</div>
-        <span class="inline-block mt-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-white text-brand">${g.grade.name}</span>
+      <label class="relative shrink-0 cursor-pointer" aria-label="프로필 사진 바꾸기">
+        ${avatar(u, 'w-16 h-16', 'text-2xl')}
+        <span class="absolute -bottom-0.5 -right-0.5 w-6 h-6 rounded-full bg-white text-brand grid place-items-center text-[11px] shadow"><i class="fa-solid fa-camera"></i></span>
+        <input type="file" accept="image/*" data-input="photo" class="hidden">
+      </label>
+      <div class="min-w-0">
+        <div class="text-2xl font-bold truncate">${esc(u.nick)}</div>
+        <div class="mt-1 flex items-center gap-2">
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-white text-brand">${g.grade.name}</span>
+          ${safePhoto(u.photo) ? '<button data-action="photodel" class="text-xs text-white/70 underline">사진 삭제</button>' : ''}
+        </div>
       </div>
     </div>
     ${progress}
@@ -665,12 +898,14 @@ function profileView() {
 // ---------- 하단 탭 ----------
 function navView() {
   const items = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['calendar', 'fa-calendar-days', '달력'], ['stats', 'fa-chart-simple', '통계'], ['me', 'fa-user', '나']];
+  const photo = safePhoto(myProfile().photo);
   return `
   <nav class="fixed bottom-4 inset-x-0 z-30 px-4">
     <div class="max-w-md mx-auto flex bg-white/95 backdrop-blur rounded-full shadow-lg ring-1 ring-black/5 p-1.5">
       ${items.map(([v, icon, label]) => `
         <button data-action="go" data-view="${v}" class="flex-1 py-2 rounded-full flex flex-col items-center gap-0.5 ${ui.view === v ? 'bg-gray-100 text-gray-900' : 'text-gray-400'}">
-          <i class="fa-solid ${icon} text-lg"></i><span class="text-[11px] font-medium">${label}</span>
+          ${v === 'me' && photo ? `<img src="${esc(photo)}" alt="" class="w-[18px] h-[18px] rounded-full object-cover ${ui.view === v ? 'ring-2 ring-brand' : ''}">` : `<i class="fa-solid ${icon} text-lg"></i>`}
+          <span class="text-[11px] font-medium">${label}</span>
         </button>`).join('')}
     </div>
   </nav>`;
@@ -685,7 +920,27 @@ function openModal(html) {
     <div class="w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 pb-8 max-h-[85vh] overflow-y-auto">${html}</div>
   </div>`;
 }
-function closeModal() { $('#modal').innerHTML = ''; render(); }
+function closeModal() {
+  $('#modal').innerHTML = '';
+  ui.paletteFor = null;
+  render();
+}
+
+function paletteView(s) {
+  const current = safeColor(s.color).toLowerCase();
+  return `
+  <div class="mt-3 mb-1 p-3 rounded-2xl bg-gray-50">
+    <div class="grid grid-cols-8 gap-2">${PALETTE.map((c) => `
+      <button data-action="setcolor" data-id="${s.id}" data-color="${c}" class="aspect-square rounded-full grid place-items-center text-white text-[10px]" style="background:${c}" aria-label="${c}">
+        ${c.toLowerCase() === current ? '<i class="fa-solid fa-check"></i>' : ''}
+      </button>`).join('')}
+    </div>
+    <label class="mt-3 flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+      <input type="color" data-input="subcolor" data-id="${s.id}" value="${current}" class="w-9 h-9 rounded-lg border-0 bg-transparent p-0 cursor-pointer">
+      원하는 색 직접 고르기
+    </label>
+  </div>`;
+}
 
 function subjectModal() {
   openModal(`
@@ -693,12 +948,15 @@ function subjectModal() {
       <h3 class="text-lg font-bold">과목 편집</h3>
       <button data-action="closemodal" class="w-8 h-8 text-gray-400" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
     </div>
-    <p class="mt-1 text-sm text-gray-500">색 동그라미를 누르면 색이 바뀌어요.</p>
+    <p class="mt-1 text-sm text-gray-500">색 동그라미를 누르면 팔레트가 열려요.</p>
     <div class="mt-5 space-y-3">${D.subjects.map((s) => `
-      <div class="flex items-center gap-2">
-        <button data-action="subcolor" data-id="${s.id}" class="w-9 h-9 shrink-0 rounded-full" style="background:${s.color}" aria-label="색 바꾸기"></button>
-        <input data-input="subname" data-id="${s.id}" value="${esc(s.name)}" maxlength="20" class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
-        <button data-action="subdel" data-id="${s.id}" class="w-8 text-gray-400 hover:text-red-400" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
+      <div>
+        <div class="flex items-center gap-2">
+          <button data-action="palette" data-id="${s.id}" class="w-9 h-9 shrink-0 rounded-full ring-offset-2 ${ui.paletteFor === s.id ? 'ring-2 ring-gray-800' : ''}" style="background:${safeColor(s.color)}" aria-label="색 고르기"></button>
+          <input data-input="subname" data-id="${s.id}" value="${esc(s.name)}" maxlength="20" class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-gray-100 outline-none focus:ring-2 focus:ring-brand">
+          <button data-action="subdel" data-id="${s.id}" class="w-8 text-gray-400 hover:text-red-400" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
+        </div>
+        ${ui.paletteFor === s.id ? paletteView(s) : ''}
       </div>`).join('')}
     </div>
     <form data-form="subadd" class="mt-4 flex gap-2">
@@ -722,7 +980,7 @@ function ddayModal() {
 }
 
 function profileModal() {
-  const u = users()[me] || {};
+  const u = myProfile();
   openModal(`
     <h3 class="text-lg font-bold">프로필 수정</h3>
     <form data-form="profile" class="mt-5 space-y-4">
@@ -737,17 +995,31 @@ function profileModal() {
     </form>`);
 }
 
+async function updateProfile(patch, doneMsg) {
+  profiles[me] = { ...myProfile(), ...patch };
+  render();
+  try {
+    await backend.saveProfile(me, patch);
+    if (doneMsg) toast(doneMsg);
+  } catch (e) {
+    toast('저장하지 못했어요. ' + e.message);
+  }
+}
+
 // ============================================================
 // 이벤트
 // ============================================================
+const findSubject = (id) => D.subjects.find((x) => x.id === id);
+
 const actions = {
   go: (el) => go(el.dataset.view),
   toggle: (el) => toggleSubject(el.dataset.id),
-  subjects: () => subjectModal(),
+  subjects: (el) => { ui.paletteFor = el.dataset.id || null; subjectModal(); },
   dday: () => ddayModal(),
   ddayclear: () => { D.examDate = ''; save(); closeModal(); },
   quote: () => { ui.quote = pickQuote(ui.quote); render(); },
   editprofile: () => profileModal(),
+  photodel: () => { if (confirm('프로필 사진을 삭제할까요?')) updateProfile({ photo: '' }, '사진을 삭제했어요'); },
   closemodal: () => closeModal(),
   backdrop: (el, e) => { if (e.target === el) closeModal(); },
 
@@ -765,7 +1037,13 @@ const actions = {
     render();
   },
 
-  mates: (el) => { ui.mates = el.checked; render(); },
+  mates: async (el) => {
+    ui.mates = el.checked;
+    if (ui.mates && !mateData) {
+      try { await loadMates(); } catch (e) { toast('스터디원 기록을 불러오지 못했어요'); }
+    }
+    render();
+  },
 
   statmode: (el) => { ui.statMode = el.dataset.mode; render(); },
   statmonth: (el) => { const m = ui.statMonth; ui.statMonth = new Date(m.getFullYear(), m.getMonth() + Number(el.dataset.delta), 1); render(); },
@@ -779,15 +1057,19 @@ const actions = {
     render();
   },
 
-  subcolor: (el) => {
-    const s = D.subjects.find((x) => x.id === el.dataset.id);
+  palette: (el) => {
+    ui.paletteFor = ui.paletteFor === el.dataset.id ? null : el.dataset.id;
+    subjectModal();
+  },
+  setcolor: (el) => {
+    const s = findSubject(el.dataset.id);
     if (!s) return;
-    s.color = COLORS[(COLORS.indexOf(s.color) + 1) % COLORS.length];
+    s.color = el.dataset.color;
     save();
     subjectModal();
   },
   subdel: (el) => {
-    const s = D.subjects.find((x) => x.id === el.dataset.id);
+    const s = findSubject(el.dataset.id);
     if (!s || !confirm(`'${s.name}' 과목을 삭제할까요?\n지금까지의 공부 기록은 통계에 남아요.`)) return;
     if (D.running?.sid === s.id) commitRunning();
     D.subjects = D.subjects.filter((x) => x.id !== s.id);
@@ -801,17 +1083,7 @@ const actions = {
     ui.authError = '';
     render();
   },
-  logout: () => {
-    if (!confirm('로그아웃할까요?')) return;
-    commitRunning();
-    save();
-    store.remove(KEY.remember);
-    sessionStore.set(null);
-    me = null;
-    D = null;
-    ui.lastNick = '';
-    render();
-  },
+  logout: () => logout(),
 };
 
 const forms = {
@@ -827,20 +1099,17 @@ const forms = {
   subadd: (f) => {
     const name = f.elements.name.value.trim();
     if (!name) return;
-    D.subjects.push({ id: uid(), name, color: COLORS[D.subjects.length % COLORS.length] });
+    const s = { id: uid(), name, color: PALETTE[(D.subjects.length * 5) % PALETTE.length] };
+    D.subjects.push(s);
     save();
     subjectModal();
     $('[data-form="subadd"] input')?.focus();
   },
   dday: (f) => { D.examDate = f.elements.date.value; save(); closeModal(); },
   profile: (f) => {
-    const all = users();
-    if (all[me]) {
-      all[me].goal = f.elements.goal.value.trim();
-      all[me].motto = f.elements.motto.value.trim();
-      store.set(KEY.users, all);
-    }
-    closeModal();
+    const patch = { goal: f.elements.goal.value.trim(), motto: f.elements.motto.value.trim() };
+    $('#modal').innerHTML = '';
+    updateProfile(patch);
   },
 };
 
@@ -854,11 +1123,29 @@ document.addEventListener('submit', (e) => {
   e.preventDefault();
   forms[f.dataset.form]?.(f);
 });
+// 입력 중에는 화면만 바꾸고, 입력을 마쳤을 때(change) 저장한다
 document.addEventListener('input', (e) => {
-  if (e.target.dataset.input !== 'subname') return;
-  const s = D.subjects.find((x) => x.id === e.target.dataset.id);
-  const name = e.target.value.trim();
-  if (s && name) { s.name = name; save(); }
+  const t = e.target, s = t.dataset.id && D ? findSubject(t.dataset.id) : null;
+  if (!s) return;
+  if (t.dataset.input === 'subname' && t.value.trim()) s.name = t.value.trim();
+  if (t.dataset.input === 'subcolor') {
+    s.color = t.value;
+    const dot = document.querySelector(`[data-action="palette"][data-id="${s.id}"]`);
+    if (dot) dot.style.background = t.value;
+  }
+});
+document.addEventListener('change', async (e) => {
+  const t = e.target;
+  if (t.dataset.input === 'subname') save();
+  if (t.dataset.input === 'subcolor') { save(); subjectModal(); }
+  if (t.dataset.input === 'photo' && t.files?.[0]) {
+    try {
+      const photo = await readPhoto(t.files[0]);
+      await updateProfile({ photo }, '프로필 사진을 바꿨어요');
+    } catch (err) {
+      toast(err.message);
+    }
+  }
 });
 
 setInterval(updateLive, 1000);
@@ -866,8 +1153,17 @@ setInterval(updateLive, 1000);
 // ============================================================
 // 시작
 // ============================================================
-(function boot() {
-  const nick = store.get(KEY.remember, null) || sessionStore.get();
-  if (nick && users()[nick]) signIn(nick);
-  else render();
+(async function boot() {
+  render();
+  const config = window.MICHO_FIREBASE;
+  try {
+    backend = config?.apiKey ? await createFirebaseBackend(config) : LocalBackend;
+    const id = await backend.restore();
+    if (id) await enter(id);
+    else render();
+  } catch (e) {
+    console.error(e);
+    ui.fatal = e.message || String(e);
+    render();
+  }
 })();
