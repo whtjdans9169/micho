@@ -489,7 +489,7 @@ function navView() {
   <nav class="nav fixed z-30 inset-x-4 md:inset-x-auto md:left-4 md:top-4 md:w-56">
     <div class="glass rounded-full md:rounded-[1.75rem] p-1.5 md:p-3 flex md:flex-col gap-1 md:h-full">
       <div class="hidden md:flex items-center gap-2.5 px-3 pt-2 pb-5">
-        <div class="btn w-9 h-9 rounded-xl grid place-items-center"><i class="fa-solid fa-compass-drafting"></i></div>
+        <img src="logo.png" alt="" class="w-10 h-10 drop-shadow-md">
         <span class="text-lg font-bold">동기들과스터디</span>
       </div>
       ${NAV.map(item).join('')}
@@ -517,7 +517,7 @@ function loginView() {
   <div class="min-h-screen grid place-items-center px-4 py-10">
     <div class="w-full max-w-md">
       <div class="text-center mb-7">
-        <div class="btn mx-auto w-16 h-16 rounded-3xl grid place-items-center text-2xl"><i class="fa-solid fa-compass-drafting"></i></div>
+        <img src="logo.png" alt="동기들과스터디" class="mx-auto w-20 h-20 drop-shadow-xl">
         <h1 class="mt-5 text-3xl font-bold tracking-tight">건축사 시험 스터디 플래너</h1>
         <p class="mt-2 text-gray-600">매일의 공부 시간을 기록하고 합격까지 함께 달려요</p>
       </div>
