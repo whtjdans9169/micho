@@ -52,6 +52,7 @@ const LEVELS = [
 const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['calendar', 'fa-calendar-days', '달력'], ['stats', 'fa-chart-simple', '통계'], ['me', 'fa-user', '나']];
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
 const DAY = 86400000;
+const AUTO_STOP = 6 * 3600000; // 타이머를 켜놓고 잊었을 때 자동으로 멈추는 시간
 const INPUT = 'field w-full px-4 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-brand/50';
 
 // ============================================================
@@ -243,10 +244,10 @@ function splitRange(s, e) {
   }
   return out;
 }
-function commitRunning() {
+function commitRunning(end = Date.now()) {
   if (!D.running) return;
   const { sid, s } = D.running;
-  for (const p of splitRange(s, Date.now())) if (p.e - p.s >= 1000) D.sessions.push({ sid, ...p });
+  for (const p of splitRange(s, end)) if (p.e - p.s >= 1000) D.sessions.push({ sid, ...p });
   D.running = null;
 }
 function allSessions() {
@@ -543,6 +544,14 @@ function updateLive() {
     if (ui.statDay === today) ui.statDay = dkey();
     today = dkey();
     render();
+    return;
+  }
+  // 한 번에 6시간을 넘기면 켜놓고 잊은 것으로 보고 6시간까지만 기록한다
+  if (D.running && Date.now() - D.running.s > AUTO_STOP) {
+    commitRunning(D.running.s + AUTO_STOP);
+    save();
+    render();
+    toast('6시간 넘게 켜져 있어서 타이머를 자동으로 멈췄어요');
     return;
   }
   const list = sessionsOn(today);
