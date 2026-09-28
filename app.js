@@ -22,7 +22,10 @@ const DEFAULT_SETTINGS = {
   examDate: '2027-03-13', // 시험일 (토)
   fine: 2000,             // 할 일을 안 적었거나 · 다 못 끝냈거나 · 인증샷이 없는 날의 벌금
   fineStart: '2026-10-10', // 벌금 계산 시작일
+  banned: {},             // 관리자가 내보낸 멤버 { id: 닉네임 }
 };
+const ADMIN_NICK = 'MICHO'; // 관리자 (멤버 내보내기 · 되돌리기)
+const BANNED_MSG = '관리자가 이 계정을 내보냈어요. 관리자에게 문의해주세요.';
 const FEED_PAGE = 24; // 홈 인증샷을 한 번에 불러오는 개수
 const DEFAULT_COLORS = ['#D97471', '#8E7CC3', '#EBC04A'];
 const PALETTE = [
@@ -292,6 +295,10 @@ const ui = {
 };
 
 const myProfile = () => profiles[me] || { nick: ui.lastNick, goal: '', motto: '', photo: '' };
+const isAdmin = () => myProfile().nick === ADMIN_NICK;
+const isBanned = (id) => !!settings.banned?.[id];
+// 내보낸 멤버를 뺀 명단 (멤버 목록 · 벌금 · 인증샷 피드에 쓰임)
+const activeMembers = () => Object.entries(profiles).filter(([id]) => !isBanned(id));
 function allQuotes() {
   const seen = new Set();
   return [...SEED_QUOTES, ...quoteList].filter((q) => q?.text && !seen.has(q.text) && seen.add(q.text));
@@ -402,7 +409,7 @@ function fineBase(id) {
 }
 function fineBoard() {
   if (!allData) return null;
-  return Object.entries(profiles).map(([id, p]) => {
+  return activeMembers().map(([id, p]) => {
     const { missed, base } = fineBase(id);
     const adjust = p.fineAdjust || 0;
     return { id, nick: p.nick || '이름 없음', photo: p.photo, missed, edited: !!adjust, amount: Math.max(0, base + adjust) };
@@ -414,7 +421,13 @@ const won = (n) => n.toLocaleString('ko-KR') + '원';
 // 로그인 흐름
 // ============================================================
 async function enter(id) {
-  const [p, data, q] = await Promise.all([loadProfiles(), loadData(id), loadQuotes()]);
+  const [p, data, q, s] = await Promise.all([loadProfiles(), loadData(id), loadQuotes(), fb.f.getDoc(docRef('board', 'settings'))]);
+  settings = { ...DEFAULT_SETTINGS, ...s.data() };
+  // 관리자가 내보낸 계정은 들어올 수 없다
+  if (isBanned(id)) {
+    await fb.a.signOut(fb.auth);
+    return authFail(BANNED_MSG);
+  }
   me = id;
   profiles = p;
   quoteList = q;
@@ -436,7 +449,11 @@ async function enter(id) {
     }),
     // 누가 공지 · 시험일 · 자료 · 인증샷을 바꾸면 모두의 화면에 바로 반영
     f.onSnapshot(docRef('board', 'notice'), (snap) => { notice = snap.data() || null; refreshView(); }, ignore),
-    f.onSnapshot(docRef('board', 'settings'), (snap) => { settings = { ...DEFAULT_SETTINGS, ...snap.data() }; refreshView(); }, ignore),
+    f.onSnapshot(docRef('board', 'settings'), (snap) => {
+      settings = { ...DEFAULT_SETTINGS, ...snap.data() };
+      if (isBanned(me)) return kickedOut(); // 쓰는 중에 내보내지면 바로 로그아웃
+      refreshView();
+    }, ignore),
     f.onSnapshot(f.collection(fb.db, 'files'), (snap) => {
       files = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at);
       refreshView();
@@ -459,6 +476,14 @@ function watchFeed() {
     proofs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     refreshView();
   }, () => {});
+}
+async function kickedOut() {
+  stopWatching();
+  await fb.a.signOut(fb.auth);
+  me = D = null;
+  profiles = {};
+  $('#modal').innerHTML = '';
+  authFail(BANNED_MSG);
 }
 function stopWatching() {
   unwatch.forEach((off) => off());
@@ -687,6 +712,7 @@ function homeView() {
 
 // 모두의 인증샷: 인스타그램 게시물 비율(4:5), 왼쪽 아래에 올린 사람
 function proofFeed() {
+  const shown = proofs.filter((p) => !isBanned(p.uid));
   const card = (p) => {
     const who = whoOf(p);
     return `
@@ -707,8 +733,8 @@ function proofFeed() {
       <h2 class="text-xl font-bold">📸 인증샷</h2>
       <button data-action="go" data-view="todo" class="text-sm font-semibold text-brand">나도 인증하기 <i class="fa-solid fa-chevron-right text-xs"></i></button>
     </div>
-    ${proofs.length
-      ? `<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">${proofs.map(card).join('')}</div>
+    ${shown.length
+      ? `<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">${shown.map(card).join('')}</div>
          ${proofs.length >= ui.feedLimit ? '<button data-action="feedmore" class="glass mt-4 w-full py-3 rounded-2xl text-gray-600">더 보기</button>' : ''}`
       : '<div class="glass rounded-3xl p-8 text-center text-gray-500">아직 인증샷이 없어요. 할 일을 끝내고 첫 인증샷을 올려보세요!</div>'}
   </section>`;
@@ -1092,25 +1118,42 @@ async function fileUrl(f) {
 }
 
 // ---------- 나 (프로필 · 등급) ----------
-// 가입한 멤버 명단: 등급이 높은 순 → 닉네임 순
+// 가입한 멤버 명단: 등급이 높은 순 → 닉네임 순. 관리자에게는 내보내기 · 되돌리기 버튼이 보인다
 function membersCard() {
   const rank = (g) => GRADES.indexOf(g);
-  const rows = Object.entries(profiles).map(([id, p]) => ({
+  const admin = isAdmin();
+  const rows = activeMembers().map(([id, p]) => ({
     id, nick: p.nick || '이름 없음', photo: p.photo,
     grade: id === me ? gradeInfo().grade : allData ? gradeInfo(allData[id] || {}).grade : null,
   })).sort((a, b) => (b.grade ? rank(b.grade) : -1) - (a.grade ? rank(a.grade) : -1) || a.nick.localeCompare(b.nick));
+  const banned = Object.entries(settings.banned || {});
   return `
   <section class="${CARD}">
-    <h3 class="font-semibold">멤버 <span class="text-sm font-normal text-gray-500">${rows.length}명</span></h3>
+    <div class="flex items-center justify-between">
+      <h3 class="font-semibold">멤버 <span class="text-sm font-normal text-gray-500">${rows.length}명</span></h3>
+      ${admin ? '<span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-gray-900 text-white"><i class="fa-solid fa-shield-halved mr-1"></i>관리자</span>' : ''}
+    </div>
     <ul class="mt-3 space-y-2 max-h-80 overflow-y-auto">${rows.map((r) => `
       <li class="flex items-center gap-3 p-2 rounded-2xl ${r.id === me ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
         ${avatar(r, 'w-9 h-9 text-sm')}
-        <span class="flex-1 min-w-0 font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span>
+        <span class="flex-1 min-w-0 font-medium truncate">
+          ${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}${r.nick === ADMIN_NICK ? ' <i class="fa-solid fa-shield-halved text-xs text-gray-500" title="관리자"></i>' : ''}
+        </span>
         ${r.grade
           ? `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${rank(r.grade) ? 'btn' : 'bg-white/80 text-gray-600'}">${r.grade.name}</span>`
           : '<i class="fa-solid fa-spinner fa-spin text-gray-400 text-xs"></i>'}
+        ${admin && r.id !== me ? `<button data-action="kick" data-id="${r.id}" class="w-8 h-8 rounded-full text-red-500 hover:bg-red-50" aria-label="${esc(r.nick)} 내보내기"><i class="fa-solid fa-user-slash text-sm"></i></button>` : ''}
       </li>`).join('')}
     </ul>
+    ${admin && banned.length ? `
+    <h4 class="mt-5 text-sm font-semibold text-gray-600">내보낸 멤버 <span class="font-normal text-gray-500">${banned.length}명</span></h4>
+    <ul class="mt-2 space-y-2">${banned.map(([id, nick]) => `
+      <li class="flex items-center gap-3 p-2 rounded-2xl bg-white/30 text-gray-500">
+        <i class="fa-solid fa-user-slash w-9 text-center"></i>
+        <span class="flex-1 min-w-0 truncate line-through">${esc(nick)}</span>
+        <button data-action="unkick" data-id="${id}" class="px-3 py-1.5 rounded-full bg-white/80 text-xs font-semibold text-gray-700">되돌리기</button>
+      </li>`).join('')}
+    </ul>` : ''}
   </section>`;
 }
 
@@ -1391,6 +1434,26 @@ const actions = {
   subjects: (el) => { ui.paletteFor = el.dataset.id || null; subjectModal(); },
   dday: () => ddayModal(),
   finesettings: () => fineModal(),
+  kick: async (el) => {
+    const id = el.dataset.id, nick = profiles[id]?.nick || '이름 없음';
+    if (!isAdmin() || !confirm(`'${nick}' 님을 내보낼까요?\n멤버 명단 · 벌금 · 인증샷에서 빠지고, 다시 로그인할 수 없어요.\n(내보낸 멤버 목록에서 되돌릴 수 있어요)`)) return;
+    try {
+      await fb.f.setDoc(docRef('board', 'settings'), { banned: { [id]: nick } }, { merge: true });
+      toast(`${nick} 님을 내보냈어요`);
+    } catch (e) {
+      toast('내보내지 못했어요 · ' + friendly(e));
+    }
+  },
+  unkick: async (el) => {
+    const id = el.dataset.id, nick = settings.banned?.[id] || '';
+    if (!isAdmin() || !confirm(`'${nick}' 님을 다시 멤버로 되돌릴까요?`)) return;
+    try {
+      await fb.f.setDoc(docRef('board', 'settings'), { banned: { [id]: fb.f.deleteField() } }, { merge: true });
+      toast(`${nick} 님을 되돌렸어요`);
+    } catch (e) {
+      toast('되돌리지 못했어요 · ' + friendly(e));
+    }
+  },
   myfine: () => myFineModal(),
   myfinereset: () => { closeModal(); updateProfile({ fineAdjust: 0 }, '계산된 벌금으로 되돌렸어요'); },
   openproof: (el) => proofModal([...proofs, ...myProofs].find((p) => p.id === el.dataset.id)),
