@@ -234,6 +234,17 @@ async function deleteProof(id) {
   delete photoCache[id];
   if (id.startsWith(me + '_')) markProofDay(id.slice(me.length + 1), false);
 }
+// 관리자가 다른 멤버의 인증샷을 지우면 그 멤버의 인증 날짜 기록에서도 뺀다
+// (저장 순번을 올려서 그 멤버의 기기에도 바로 반영되게)
+async function removeProofDay(uid, date) {
+  const ref = docRef('data', uid), snap = await fb.f.getDoc(ref);
+  const data = snap.data();
+  if (!data?.proofDays?.includes(date)) return;
+  await fb.f.updateDoc(ref, {
+    proofDays: data.proofDays.filter((d) => d !== date),
+    savedAt: Math.max(Date.now(), (data.savedAt || 0) + 1),
+  });
+}
 function markProofDay(date, on) {
   const days = new Set(D.proofDays || []);
   if (days.has(date) === on) return;
@@ -471,11 +482,14 @@ async function enter(id) {
     }, ignore),
     f.onSnapshot(f.query(f.collection(fb.db, 'proofs'), f.where('uid', '==', id)), (snap) => {
       myProofs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at);
-      // 예전에 올린 인증샷 날짜가 내 기록에 빠져 있으면 채워 넣는다
-      const days = new Set(D.proofDays || []);
-      if (myProofs.some((x) => !days.has(x.date))) {
-        D.proofDays = [...new Set([...days, ...myProofs.map((x) => x.date)])].sort();
-        save();
+      // 내 인증 날짜 기록을 실제 인증샷과 맞춘다 (예전에 올린 것 채우기 · 관리자가 지운 것 빼기)
+      // 기기에 저장된 옛 목록(fromCache)으로는 판단하지 않는다
+      if (!snap.metadata.fromCache) {
+        const want = [...new Set(myProofs.map((x) => x.date))].sort();
+        if (want.join() !== (D.proofDays || []).join()) {
+          D.proofDays = want;
+          save();
+        }
       }
       refreshView();
     }, ignore),
@@ -1569,7 +1583,7 @@ function proofModal(p) {
     </div>
     <img data-proof="${p.id}" src="${p.thumb}" alt="" class="mt-4 w-full aspect-[4/5] object-cover rounded-2xl">
     <div class="mt-3 flex gap-1.5">${reactBar(p, false)}</div>
-    ${p.uid === me ? `<button data-action="proofdel" data-id="${p.id}" class="mt-4 w-full py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1.5"></i>인증샷 삭제</button>` : ''}`);
+    ${p.uid === me || isAdmin() ? `<button data-action="proofdel" data-id="${p.id}" class="mt-4 w-full py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1.5"></i>인증샷 삭제${p.uid === me ? '' : ' (관리자)'}</button>` : ''}`);
   ui.openProof = p.id;
   hydrateProofs();
 }
@@ -1732,8 +1746,21 @@ const actions = {
   myfinereset: () => { closeModal(); updateProfile({ fineAdjust: 0 }, '계산된 벌금으로 되돌렸어요'); },
   openproof: (el) => proofModal([...proofs, ...myProofs].find((p) => p.id === el.dataset.id)),
   proofdel: async (el) => {
-    if (!confirm('이 인증샷을 삭제할까요?')) return;
-    try { await deleteProof(el.dataset.id); closeModal(); toast('인증샷을 삭제했어요'); } catch (e) { toast('삭제하지 못했어요 · ' + friendly(e)); }
+    const id = el.dataset.id, p = [...proofs, ...myProofs].find((x) => x.id === id);
+    const mine = p?.uid === me;
+    if (!mine && !isAdmin()) return;
+    const msg = mine
+      ? '이 인증샷을 삭제할까요?'
+      : `관리자 권한으로 ${whoOf(p).nick} 님의 인증샷(${fmtDateKo(parseKey(p.date))})을 삭제할까요?\n그날 인증이 사라져 벌금이 생길 수 있어요.`;
+    if (!confirm(msg)) return;
+    try {
+      await deleteProof(id);
+      if (!mine) await removeProofDay(p.uid, p.date);
+      closeModal();
+      toast('인증샷을 삭제했어요');
+    } catch (e) {
+      toast('삭제하지 못했어요 · ' + friendly(e));
+    }
   },
   feedmore: () => { ui.feedLimit += FEED_PAGE; watchFeed(); },
   quote: () => { ui.quote = pickQuote(ui.quote); render(); },
