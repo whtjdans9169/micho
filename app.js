@@ -1260,8 +1260,10 @@ function filesView() {
 function fileCard(f) {
   return `
   <button data-action="openfile" data-id="${f.id}" class="glass rounded-3xl p-2 text-left flex flex-col min-w-0">
-    <div class="w-full aspect-square rounded-2xl overflow-hidden grid place-items-center ${f.thumb ? '' : 'bg-white/60'}">
-      ${f.thumb ? `<img src="${f.thumb}" alt="" loading="lazy" class="w-full h-full object-cover">` : `<i class="fa-solid ${fileIcon(f)} text-4xl text-brand"></i>`}
+    <div class="relative w-full aspect-square rounded-2xl overflow-hidden grid place-items-center bg-white/60">
+      ${f.thumb
+        ? `<img src="${f.thumb}" alt="" loading="lazy" class="absolute inset-0 w-full h-full object-contain">` // 사진 전체가 보이게 (자르지 않음)
+        : `<i class="fa-solid ${fileIcon(f)} text-4xl text-brand"></i>`}
     </div>
     <div class="w-full min-w-0 px-1.5 pt-2 pb-1">
       <p class="text-sm font-semibold truncate">${esc(f.caption || f.name)}</p>
