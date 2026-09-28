@@ -27,6 +27,13 @@
       },
     };
   </script>
+  <script>
+    // 다크 모드를 화면이 그려지기 전에 먼저 적용 (깜빡임 방지)
+    try {
+      const mode = localStorage.getItem('micho:theme') || 'system';
+      if (mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)) document.documentElement.classList.add('dark');
+    } catch {}
+  </script>
   <style>
     /* 앱처럼 쓰도록 두 손가락 확대 · 두 번 탭 확대를 막는다 */
     html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
@@ -114,6 +121,39 @@
     /* 하단 탭 (아이폰 홈 바와 겹치지 않게) */
     .nav { bottom: max(1rem, env(safe-area-inset-bottom)); }
     @media (min-width: 768px) { .nav { bottom: 1rem; } }
+
+    /* ---------- 다크 모드 (html.dark) ---------- */
+    html.dark { color-scheme: dark; }
+    html.dark body { color: #E4F1E9; background: #0B1A13; }
+    html.dark body::before {
+      background:
+        radial-gradient(40rem 40rem at 5% -5%, rgba(31, 157, 102, .35), transparent 60%),
+        radial-gradient(34rem 34rem at 105% 5%, rgba(56, 130, 170, .22), transparent 60%),
+        radial-gradient(40rem 40rem at 60% 115%, rgba(101, 163, 13, .18), transparent 60%),
+        linear-gradient(180deg, #0E2018, #08140F);
+    }
+    html.dark .glass { background: rgba(28, 48, 38, .55); border-color: rgba(255, 255, 255, .08); box-shadow: 0 12px 32px -14px rgba(0, 0, 0, .6), inset 0 1px 0 rgba(255, 255, 255, .06); }
+    html.dark .glass-strong { background: rgba(20, 36, 28, .92); border-color: rgba(255, 255, 255, .08); }
+    html.dark .glass-hero { background: linear-gradient(135deg, #2BAF7A 0%, #17804F 55%, #0B5236 100%); border-color: rgba(255, 255, 255, .15); }
+    html.dark .field { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .1); color: #E4F1E9; }
+    html.dark .field::placeholder { color: #6E8479; }
+    html.dark .text-gray-400 { color: #72877C; }
+    html.dark .text-gray-500 { color: #8FA398; }
+    html.dark .text-gray-600 { color: #A9BAB1; }
+    html.dark .text-gray-700 { color: #C4D2CA; }
+    html.dark .text-brand { color: #4FD69E; }
+    html.dark .text-brand-dark { color: #7BE3B6; }
+    html.dark .bg-white { background-color: #1E3A2D; }
+    html.dark .bg-white\/30, html.dark .bg-white\/40 { background-color: rgba(255, 255, 255, .04); }
+    html.dark .bg-white\/50, html.dark .bg-white\/60 { background-color: rgba(255, 255, 255, .06); }
+    html.dark .bg-white\/70, html.dark .bg-white\/75 { background-color: rgba(255, 255, 255, .08); }
+    html.dark .bg-white\/80, html.dark .bg-white\/85 { background-color: rgba(255, 255, 255, .11); }
+    html.dark .hover\:bg-white\/40:hover, html.dark .hover\:bg-white\/50:hover, html.dark .hover\:bg-white\/60:hover { background-color: rgba(255, 255, 255, .08); }
+    html.dark .bg-gray-900 { background-color: #E4F1E9; color: #0B1A13; }
+    html.dark .divide-white\/70 > * + * { border-color: rgba(255, 255, 255, .08); }
+    html.dark .border-white\/80 { border-color: rgba(255, 255, 255, .1); }
+    html.dark .border-gray-300 { border-color: rgba(255, 255, 255, .25); }
+    html.dark .hover\:bg-red-50:hover { background-color: rgba(239, 68, 68, .15); }
 
     input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
     input[type="color"]::-webkit-color-swatch { border: none; border-radius: 10px; }
