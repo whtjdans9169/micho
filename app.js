@@ -834,15 +834,16 @@ function todayStatus() {
       <h2 class="font-bold">오늘의 인증 <span class="text-brand">${count}</span><span class="text-gray-500 font-medium">/${members.length}명</span></h2>
       <span class="text-xs text-gray-500">${count && count === members.length ? '모두 인증 완료! 🎉' : '아직인 멤버도 화이팅!'}</span>
     </div>
-    <div class="mt-3 flex gap-3 overflow-x-auto pb-1">${members.map(([id, p]) => {
+    <div class="mt-3 flex flex-wrap gap-x-3 gap-y-3 pb-1">${members.map(([id, p]) => {
       const ok = done.has(id);
+      // 닉네임은 줄이지 않고 전부 보여준다 (칸 너비가 닉네임에 맞춰 늘어나고, 넘치면 다음 줄로)
       return `
-      <div class="w-14 shrink-0 flex flex-col items-center">
+      <div class="min-w-[3.5rem] flex flex-col items-center">
         <div class="relative">
           ${avatar(p, `w-12 h-12 text-sm ${ok ? 'ring-2 ring-brand ring-offset-2 ring-offset-transparent' : 'opacity-40 grayscale'}`)}
           ${ok ? '<span class="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full btn grid place-items-center text-[10px]"><i class="fa-solid fa-check"></i></span>' : ''}
         </div>
-        <span class="mt-1.5 w-full text-center text-[11px] truncate ${ok ? 'font-semibold' : 'text-gray-500'}">${esc(p.nick || '')}</span>
+        <span class="mt-1.5 text-center text-[11px] whitespace-nowrap ${ok ? 'font-semibold' : 'text-gray-500'}">${esc(p.nick || '')}</span>
       </div>`;
     }).join('')}
     </div>
