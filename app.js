@@ -269,6 +269,11 @@ async function loadEveryone() {
     profiles = { ...p, [me]: { ...p[me], ...myProfile() } };
     allData = {};
     snap.forEach((d) => { allData[d.id] = d.data(); });
+    // 실명은 관리자만 불러온다 (realnames 컬렉션, 보안 규칙으로도 관리자만 읽기 허용)
+    if (isAdmin()) {
+      const rn = await fb.f.getDocs(fb.f.collection(fb.db, 'realnames'));
+      realNames = Object.fromEntries(rn.docs.map((d) => [d.id, d.data().name]));
+    }
     if (['home', 'stats', 'me'].includes(ui.view)) refreshView();
   } catch (e) {
     toast('모두의 기록을 불러오지 못했어요 · ' + friendly(e));
@@ -290,6 +295,7 @@ let pending = [];      // 게시하려고 고른 파일들
 let proofs = [];       // 홈 인증샷 피드 (최신순)
 let myProofs = [];     // 내 인증샷 (최신순)
 let allData = null;    // 벌금 계산용 모두의 기록 (통계 화면을 열 때 불러옴)
+let realNames = {};    // id → 실명 (관리자에게만 채워짐)
 let todayProofs = [];  // 오늘 올라온 인증샷 (오늘의 인증 현황)
 let todayOff = null;   // 오늘 인증샷 구독 해제 (자정이 지나면 새 날짜로 다시 구독)
 let unwatch = [];      // 실시간 구독 해제 함수들
@@ -511,7 +517,18 @@ async function enter(id) {
   Object.assign(ui, { authError: '', authMode: 'login', view: 'home', paletteFor: null, quote: pickQuote() });
   render();
   loadEveryone(); // 홈 저금통에 쓸 모두의 벌금
+  askRealName();
 }
+
+// 관리자가 아닌데 실명이 아직 없으면 (예전에 가입한 멤버) 한 번 적어달라고 한다
+async function askRealName() {
+  if (isAdmin()) return;
+  try {
+    const snap = await fb.f.getDoc(docRef('realnames', me));
+    if (!snap.exists()) realNameModal();
+  } catch {}
+}
+const saveRealName = (name) => fb.f.setDoc(docRef('realnames', me), { name, nick: myProfile().nick, at: Date.now() });
 
 function watchFeed() {
   feedOff?.();
@@ -559,6 +576,8 @@ async function onAuth(form) {
   const signup = ui.authMode === 'signup';
   ui.lastNick = nick;
   if (!nick) return authFail('닉네임을 입력해주세요.');
+  const realName = String(f.get('real') || '').trim();
+  if (signup && nick !== ADMIN_NICK && !realName) return authFail('실명을 입력해주세요. 관리자만 볼 수 있어요.');
   const btn = form.querySelector('[data-submit]');
   btn.disabled = true;
   btn.textContent = '잠시만요…';
@@ -572,6 +591,8 @@ async function onAuth(form) {
       const goal = String(f.get('goal') || '').trim();
       const motto = String(f.get('motto') || '').trim();
       await fs.setDoc(docRef('users', user.uid), { nick, goal, motto, photo: '', createdAt: Date.now() });
+      // 실명은 닉네임과 따로, 관리자만 읽을 수 있는 곳에 저장
+      if (realName) await fs.setDoc(docRef('realnames', user.uid), { name: realName, nick, at: Date.now() });
       // 첫 로그인 시 좌우명을 모두의 명언에 등록
       if (motto) await fs.addDoc(fs.collection(fb.db, 'quotes'), { text: motto, by: nick, uid: user.uid, at: Date.now() });
     } else {
@@ -704,6 +725,7 @@ function loginView() {
         <div class="flex p-1 rounded-2xl bg-white/40">${tab('login', '로그인')}${tab('signup', '처음이에요')}</div>
         ${field('nick', '닉네임', 'text', '닉네임', `required maxlength="20" autocomplete="username" value="${esc(ui.lastNick)}"`)}
         ${field('pw', '비밀번호', 'password', signup ? '6자 이상' : '비밀번호', `required ${signup ? 'minlength="6"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
+        ${signup ? field('real', '실명 <span class="text-xs font-normal text-gray-500">· 관리자만 볼 수 있어요</span>', 'text', '예) 홍길동 (관리자 계정은 비워도 돼요)', 'maxlength="20" autocomplete="name"') : ''}
         ${signup ? field('goal', '시험 전 나의 목표', 'text', '예) 올해 3과목 모두 합격!', 'maxlength="60"') + field('motto', '나의 명언 / 좌우명', 'text', '예) 오늘 걷지 않으면 내일은 뛰어야 한다', 'maxlength="80"') : ''}
         <label class="flex items-center gap-2 text-sm text-gray-600">
           <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#1F9D66]">계정 기억하기
@@ -1364,6 +1386,7 @@ function membersCard() {
         ${avatar(r, 'w-9 h-9 text-sm')}
         <span class="flex-1 min-w-0 font-medium truncate">
           ${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}${r.nick === ADMIN_NICK ? ' <i class="fa-solid fa-shield-halved text-xs text-gray-500" title="관리자"></i>' : ''}
+          ${admin && r.nick !== ADMIN_NICK ? `<span class="block text-xs font-normal ${realNames[r.id] ? 'text-gray-500' : 'text-red-500'}">${realNames[r.id] ? '실명 ' + esc(realNames[r.id]) : '실명 미입력'}</span>` : ''}
         </span>
         ${r.grade
           ? `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${rank(r.grade) ? 'btn' : 'bg-white/80 text-gray-600'}">${r.grade.name}</span>`
@@ -1376,7 +1399,7 @@ function membersCard() {
     <ul class="mt-2 space-y-2">${banned.map(([id, nick]) => `
       <li class="flex items-center gap-3 p-2 rounded-2xl bg-white/30 text-gray-500">
         <i class="fa-solid fa-user-slash w-9 text-center"></i>
-        <span class="flex-1 min-w-0 truncate line-through">${esc(nick)}</span>
+        <span class="flex-1 min-w-0 truncate"><span class="line-through">${esc(nick)}</span>${realNames[id] ? ` <span class="text-xs">(${esc(realNames[id])})</span>` : ''}</span>
         <button data-action="unkick" data-id="${id}" class="px-3 py-1.5 rounded-full bg-white/80 text-xs font-semibold text-gray-700">되돌리기</button>
       </li>`).join('')}
     </ul>` : ''}
@@ -1481,7 +1504,7 @@ async function backup() {
   toast('백업 파일을 만드는 중…');
   try {
     const out = { app: '동기들과스터디', exportedAt: new Date().toISOString() };
-    for (const col of ['users', 'data', 'quotes', 'board', 'files', 'proofs']) {
+    for (const col of ['users', 'realnames', 'data', 'quotes', 'board', 'files', 'proofs']) {
       const snap = await fb.f.getDocs(fb.f.collection(fb.db, col));
       out[col] = Object.fromEntries(snap.docs.map((d) => [d.id, d.data()]));
     }
@@ -1528,6 +1551,7 @@ async function withdraw(form) {
       ...myQuotes.docs.map((d) => f.deleteDoc(d.ref)),
       f.deleteDoc(docRef('data', me)),
       f.deleteDoc(docRef('users', me)),
+      f.deleteDoc(docRef('realnames', me)),
     ]);
     await a.deleteUser(user);
     me = D = null;
@@ -1737,6 +1761,19 @@ function fileModal(f) {
       if (img) { img.src = url; img.classList.remove('blur-sm'); }
     }).catch((e) => toast('사진을 불러오지 못했어요 · ' + friendly(e)));
   }
+}
+
+function realNameModal() {
+  openModal(`
+    <h3 class="text-lg font-bold">실명을 알려주세요</h3>
+    <p class="mt-1 text-sm text-gray-500 leading-relaxed">스터디 관리를 위해 실명이 필요해요.<br>실명은 <b>관리자만</b> 볼 수 있고, 다른 멤버에게는 지금처럼 닉네임만 보여요.</p>
+    <form data-form="realname" class="mt-5 space-y-4">
+      <input name="real" required maxlength="20" autocomplete="name" placeholder="예) 홍길동" class="${INPUT}">
+      <div class="flex gap-2">
+        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">다음에</button>
+        <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
+      </div>
+    </form>`);
 }
 
 function profileModal() {
@@ -1973,6 +2010,17 @@ const forms = {
     updateProfile({ fineAdjust: amount - fineBase(me).base }, '내 벌금을 수정했어요');
   },
   fine: (f) => saveSettings({ fine: Math.max(0, Number(f.elements.fine.value) || 0), fineStart: f.elements.start.value }, '벌금 설정을 바꿨어요'),
+  realname: async (f) => {
+    const name = f.elements.real.value.trim();
+    if (!name) return;
+    try {
+      await saveRealName(name);
+      closeModal();
+      toast('실명을 저장했어요. 관리자만 볼 수 있어요');
+    } catch (e) {
+      toast('저장하지 못했어요 · ' + friendly(e));
+    }
+  },
   profile: (f) => {
     $('#modal').innerHTML = '';
     updateProfile({ goal: f.elements.goal.value.trim(), motto: f.elements.motto.value.trim() });
