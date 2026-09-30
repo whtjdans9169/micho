@@ -724,7 +724,10 @@ function loginView() {
         <div class="flex p-1 rounded-2xl bg-white/40">${tab('login', '로그인')}${tab('signup', '처음이에요')}</div>
         ${field('nick', '닉네임', 'text', '닉네임', `required maxlength="20" autocomplete="username" value="${esc(ui.lastNick)}"`)}
         ${field('pw', '비밀번호', 'password', signup ? '6자 이상' : '비밀번호', `required ${signup ? 'minlength="6"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
-        ${signup ? field('real', '실명 <span class="text-red-500">*</span> <span class="text-xs font-normal text-gray-500">· 필수 · 관리자만 볼 수 있어요</span>', 'text', '예) 홍길동', 'required maxlength="20" autocomplete="name"') : ''}
+        ${signup ? field('real', '실명 <span class="text-red-500">*</span> <span class="text-xs font-normal text-gray-500">· 필수</span>', 'text', '예) 홍길동', 'required maxlength="20" autocomplete="name"') + `
+          <p class="-mt-1 px-3 py-2.5 rounded-xl bg-white/50 text-xs text-gray-600 leading-relaxed">
+            <i class="fa-solid fa-lock text-brand mr-1"></i>멤버들의 이름은 <b>닉네임으로만</b> 보여져요!<br>실명은 <b>관리자만</b> 알 수 있습니다!
+          </p>` : ''}
         ${signup ? field('goal', '시험 전 나의 목표', 'text', '예) 올해 3과목 모두 합격!', 'maxlength="60"') + field('motto', '나의 명언 / 좌우명', 'text', '예) 오늘 걷지 않으면 내일은 뛰어야 한다', 'maxlength="80"') : ''}
         <label class="flex items-center gap-2 text-sm text-gray-600">
           <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#1F9D66]">계정 기억하기
