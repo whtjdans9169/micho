@@ -263,21 +263,29 @@ function hydrateProofs() {
 }
 
 // ---------- 모두의 기록 (벌금 현황 · 멤버 등급 계산용, 통계 · 나 화면을 열 때마다 새로 불러옴) ----------
-async function loadEveryone() {
+async function loadEveryone(retry = true) {
+  if (!me) return;
   try {
     const [p, snap] = await Promise.all([loadProfiles(), fb.f.getDocs(fb.f.collection(fb.db, 'data'))]);
     profiles = { ...p, [me]: { ...p[me], ...myProfile() } };
     allData = {};
     snap.forEach((d) => { allData[d.id] = d.data(); });
-    // 실명은 관리자만 불러온다 (realnames 컬렉션, 보안 규칙으로도 관리자만 읽기 허용)
-    if (isAdmin()) {
+  } catch (e) {
+    // 앱을 오래 켜뒀다가 다시 열면 로그인 확인이 갱신되기 전 잠깐 막힐 수 있어서, 한 번 더 시도한다
+    if (retry) { setTimeout(() => loadEveryone(false), 1500); return; }
+    if (me) toast('모두의 기록을 불러오지 못했어요 · ' + friendly(e));
+    return;
+  }
+  // 실명은 관리자만 불러온다 (보안 규칙으로도 관리자만 읽기 허용). 실패해도 나머지 화면은 그대로 보여준다
+  if (isAdmin()) {
+    try {
       const rn = await fb.f.getDocs(fb.f.collection(fb.db, 'realnames'));
       realNames = Object.fromEntries(rn.docs.map((d) => [d.id, d.data().name]));
+    } catch (e) {
+      console.warn('실명 목록을 불러오지 못했어요', e);
     }
-    if (['home', 'stats', 'me'].includes(ui.view)) refreshView();
-  } catch (e) {
-    toast('모두의 기록을 불러오지 못했어요 · ' + friendly(e));
   }
+  if (['home', 'stats', 'me'].includes(ui.view)) refreshView();
 }
 
 // ============================================================
