@@ -724,7 +724,7 @@ function loginView() {
         <div class="flex p-1 rounded-2xl bg-white/40">${tab('login', '로그인')}${tab('signup', '처음이에요')}</div>
         ${field('nick', '닉네임', 'text', '닉네임', `required maxlength="20" autocomplete="username" value="${esc(ui.lastNick)}"`)}
         ${field('pw', '비밀번호', 'password', signup ? '6자 이상' : '비밀번호', `required ${signup ? 'minlength="6"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
-        ${signup ? field('real', '실명 <span class="text-xs font-normal text-gray-500">· 관리자만 볼 수 있어요</span>', 'text', '예) 홍길동', 'maxlength="20" autocomplete="name"') : ''}
+        ${signup ? field('real', '실명 <span class="text-red-500">*</span> <span class="text-xs font-normal text-gray-500">· 필수 · 관리자만 볼 수 있어요</span>', 'text', '예) 홍길동', 'required maxlength="20" autocomplete="name"') : ''}
         ${signup ? field('goal', '시험 전 나의 목표', 'text', '예) 올해 3과목 모두 합격!', 'maxlength="60"') + field('motto', '나의 명언 / 좌우명', 'text', '예) 오늘 걷지 않으면 내일은 뛰어야 한다', 'maxlength="80"') : ''}
         <label class="flex items-center gap-2 text-sm text-gray-600">
           <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#1F9D66]">계정 기억하기
@@ -1763,16 +1763,13 @@ function fileModal(f) {
 }
 
 function realNameModal() {
-  ui.mustModal = isAdmin(); // 관리자는 실명을 적어야만 닫힌다
+  ui.mustModal = true; // 실명을 적어야만 닫힌다 (모든 멤버)
   openModal(`
     <h3 class="text-lg font-bold">실명을 알려주세요</h3>
-    <p class="mt-1 text-sm text-gray-500 leading-relaxed">스터디 관리를 위해 실명이 필요해요.<br>실명은 <b>관리자만</b> 볼 수 있고, 다른 멤버에게는 지금처럼 닉네임만 보여요.</p>
+    <p class="mt-1 text-sm text-gray-500 leading-relaxed">스터디 관리를 위해 <b>실명 입력이 필수</b>예요. 입력해야 앱을 쓸 수 있어요.<br>실명은 <b>관리자만</b> 볼 수 있고, 다른 멤버에게는 지금처럼 닉네임만 보여요.</p>
     <form data-form="realname" class="mt-5 space-y-4">
       <input name="real" required maxlength="20" autocomplete="name" placeholder="예) 홍길동" class="${INPUT}">
-      <div class="flex gap-2">
-        ${isAdmin() ? '' : '<button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">다음에</button>'}
-        <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
-      </div>
+      <button class="btn w-full py-3 rounded-2xl font-semibold">저장하고 시작하기</button>
     </form>`);
 }
 
