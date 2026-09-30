@@ -520,9 +520,8 @@ async function enter(id) {
   askRealName();
 }
 
-// 관리자가 아닌데 실명이 아직 없으면 (예전에 가입한 멤버) 한 번 적어달라고 한다
+// 실명이 아직 없으면 (예전에 가입한 멤버 · 관리자 포함) 한 번 적어달라고 한다
 async function askRealName() {
-  if (isAdmin()) return;
   try {
     const snap = await fb.f.getDoc(docRef('realnames', me));
     if (!snap.exists()) realNameModal();
@@ -577,7 +576,7 @@ async function onAuth(form) {
   ui.lastNick = nick;
   if (!nick) return authFail('닉네임을 입력해주세요.');
   const realName = String(f.get('real') || '').trim();
-  if (signup && nick !== ADMIN_NICK && !realName) return authFail('실명을 입력해주세요. 관리자만 볼 수 있어요.');
+  if (signup && !realName) return authFail('실명을 입력해주세요. 관리자만 볼 수 있어요.');
   const btn = form.querySelector('[data-submit]');
   btn.disabled = true;
   btn.textContent = '잠시만요…';
@@ -725,7 +724,7 @@ function loginView() {
         <div class="flex p-1 rounded-2xl bg-white/40">${tab('login', '로그인')}${tab('signup', '처음이에요')}</div>
         ${field('nick', '닉네임', 'text', '닉네임', `required maxlength="20" autocomplete="username" value="${esc(ui.lastNick)}"`)}
         ${field('pw', '비밀번호', 'password', signup ? '6자 이상' : '비밀번호', `required ${signup ? 'minlength="6"' : ''} autocomplete="${signup ? 'new-password' : 'current-password'}"`)}
-        ${signup ? field('real', '실명 <span class="text-xs font-normal text-gray-500">· 관리자만 볼 수 있어요</span>', 'text', '예) 홍길동 (관리자 계정은 비워도 돼요)', 'maxlength="20" autocomplete="name"') : ''}
+        ${signup ? field('real', '실명 <span class="text-xs font-normal text-gray-500">· 관리자만 볼 수 있어요</span>', 'text', '예) 홍길동', 'maxlength="20" autocomplete="name"') : ''}
         ${signup ? field('goal', '시험 전 나의 목표', 'text', '예) 올해 3과목 모두 합격!', 'maxlength="60"') + field('motto', '나의 명언 / 좌우명', 'text', '예) 오늘 걷지 않으면 내일은 뛰어야 한다', 'maxlength="80"') : ''}
         <label class="flex items-center gap-2 text-sm text-gray-600">
           <input type="checkbox" name="remember" checked class="w-4 h-4 accent-[#1F9D66]">계정 기억하기
@@ -1386,7 +1385,7 @@ function membersCard() {
         ${avatar(r, 'w-9 h-9 text-sm')}
         <span class="flex-1 min-w-0 font-medium truncate">
           ${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}${r.nick === ADMIN_NICK ? ' <i class="fa-solid fa-shield-halved text-xs text-gray-500" title="관리자"></i>' : ''}
-          ${admin && r.nick !== ADMIN_NICK ? `<span class="block text-xs font-normal ${realNames[r.id] ? 'text-gray-500' : 'text-red-500'}">${realNames[r.id] ? '실명 ' + esc(realNames[r.id]) : '실명 미입력'}</span>` : ''}
+          ${admin ? `<span class="block text-xs font-normal ${realNames[r.id] ? 'text-gray-500' : 'text-red-500'}">${realNames[r.id] ? '실명 ' + esc(realNames[r.id]) : '실명 미입력'}</span>` : ''}
         </span>
         ${r.grade
           ? `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${rank(r.grade) ? 'btn' : 'bg-white/80 text-gray-600'}">${r.grade.name}</span>`
@@ -1764,13 +1763,14 @@ function fileModal(f) {
 }
 
 function realNameModal() {
+  ui.mustModal = isAdmin(); // 관리자는 실명을 적어야만 닫힌다
   openModal(`
     <h3 class="text-lg font-bold">실명을 알려주세요</h3>
     <p class="mt-1 text-sm text-gray-500 leading-relaxed">스터디 관리를 위해 실명이 필요해요.<br>실명은 <b>관리자만</b> 볼 수 있고, 다른 멤버에게는 지금처럼 닉네임만 보여요.</p>
     <form data-form="realname" class="mt-5 space-y-4">
       <input name="real" required maxlength="20" autocomplete="name" placeholder="예) 홍길동" class="${INPUT}">
       <div class="flex gap-2">
-        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">다음에</button>
+        ${isAdmin() ? '' : '<button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">다음에</button>'}
         <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
       </div>
     </form>`);
@@ -1887,7 +1887,7 @@ const actions = {
   editprofile: () => profileModal(),
   photodel: () => { if (confirm('프로필 사진을 삭제할까요?')) updateProfile({ photo: '' }, '사진을 삭제했어요'); },
   closemodal: () => closeModal(),
-  backdrop: (el, e) => { if (e.target === el) closeModal(); },
+  backdrop: (el, e) => { if (e.target === el && !ui.mustModal) closeModal(); },
 
   notice: () => noticeModal(),
   noticedel: async () => {
@@ -2015,6 +2015,8 @@ const forms = {
     if (!name) return;
     try {
       await saveRealName(name);
+      realNames[me] = name;
+      ui.mustModal = false;
       closeModal();
       toast('실명을 저장했어요. 관리자만 볼 수 있어요');
     } catch (e) {
