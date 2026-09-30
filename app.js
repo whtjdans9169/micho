@@ -707,6 +707,9 @@ function navView() {
           <div class="text-xs text-brand-dark">${gradeInfo().grade.name}</div>
         </div>
       </div>
+      <button data-action="logout" class="hidden md:flex items-center gap-3 px-4 py-2.5 rounded-2xl text-sm text-gray-500 hover:bg-white/40">
+        <i class="fa-solid fa-right-from-bracket md:w-5"></i>로그아웃
+      </button>
     </div>
   </nav>`;
 }
