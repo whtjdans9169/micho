@@ -1385,7 +1385,7 @@ function membersCard() {
         ${avatar(r, 'w-9 h-9 text-sm')}
         <span class="flex-1 min-w-0 font-medium truncate">
           ${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}${r.nick === ADMIN_NICK ? ' <i class="fa-solid fa-shield-halved text-xs text-gray-500" title="관리자"></i>' : ''}
-          ${admin ? `<span class="block text-xs font-normal ${realNames[r.id] ? 'text-gray-500' : 'text-red-500'}">${realNames[r.id] ? '실명 ' + esc(realNames[r.id]) : '실명 미입력'}</span>` : ''}
+          ${admin ? `<span class="block text-xs font-normal ${realNames[r.id] ? 'text-gray-500' : 'text-red-500'}">${realNames[r.id] ? esc(realNames[r.id]) : '실명 미입력'}</span>` : ''}
         </span>
         ${r.grade
           ? `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${rank(r.grade) ? 'btn' : 'bg-white/80 text-gray-600'}">${r.grade.name}</span>`
