@@ -317,6 +317,7 @@ const ui = {
   statDay: today,
   statWeek: mondayOf(new Date()),
   fileFilter: 'all',
+  teamView: 'all', // 관리자가 고른 팀 보기 (all · 정 · 림)
   feedLimit: FEED_PAGE,
   quote: null,
   paletteFor: null,
@@ -331,6 +332,28 @@ const isAdmin = () => myProfile().nick === ADMIN_NICK;
 const isBanned = (id) => !!settings.banned?.[id];
 // 내보낸 멤버를 뺀 명단 (멤버 목록 · 벌금 현황에 쓰임. 인증샷 피드와 오늘 이미 한 인증은 남긴다)
 const activeMembers = () => Object.entries(profiles).filter(([id]) => !isBanned(id));
+
+// ---------- 팀 (관리자가 board/settings.teams 에 배정, 예: { uid: '정' }) ----------
+// 인증샷 · 벌금 · 저금통은 같은 팀끼리만, 자료 · 멤버 명단 · 오늘의 인증 · 공지 · 명언은 모두에게
+// 미배정 멤버는 모두를 보고 모두에게 보인다 (팀을 나누기 전에는 지금처럼 다 함께)
+const TEAMS = ['정', '림'];
+const teamOf = (id) => settings.teams?.[id] || '';
+const myTeam = () => teamOf(me);
+function inMyScope(id) {
+  if (isAdmin()) return ui.teamView === 'all' || teamOf(id) === ui.teamView; // 관리자는 골라서 본다
+  return !myTeam() || !teamOf(id) || teamOf(id) === myTeam();
+}
+const teamLabel = (t) => (t ? `${t} 팀` : '미배정');
+function teamBadge(id) {
+  const t = teamOf(id);
+  return t ? `<span class="px-1.5 py-px rounded-md text-[10px] font-bold ${t === '정' ? 'bg-emerald-100 text-emerald-700' : 'bg-sky-100 text-sky-700'}">${t}</span>` : '';
+}
+// 관리자용 팀 보기 선택 (전체 · 정 팀 · 림 팀)
+function teamPicker() {
+  if (!isAdmin()) return myTeam() ? `<span class="text-xs text-gray-500">${teamLabel(myTeam())} 기준</span>` : '';
+  return `<div class="glass rounded-full p-0.5 inline-flex text-xs">${[['all', '전체'], ...TEAMS.map((t) => [t, teamLabel(t)])].map(([k, l]) => `
+    <button data-action="teamview" data-team="${k}" class="px-3 py-1 rounded-full font-semibold ${ui.teamView === k ? 'btn' : 'text-gray-600'}">${l}</button>`).join('')}</div>`;
+}
 function allQuotes() {
   const seen = new Set();
   return [...SEED_QUOTES, ...quoteList].filter((q) => q?.text && !seen.has(q.text) && seen.add(q.text));
@@ -455,7 +478,7 @@ function fineBase(id) {
 }
 function fineBoard() {
   if (!allData) return null;
-  return activeMembers().map(([id, p]) => {
+  return activeMembers().filter(([id]) => inMyScope(id)).map(([id, p]) => {
     const { missed, base } = fineBase(id);
     const adjust = p.fineAdjust || 0;
     return { id, nick: p.nick || '이름 없음', photo: p.photo, missed, edited: !!adjust, amount: Math.max(0, base + adjust) };
@@ -788,7 +811,7 @@ function piggyBank() {
   <section class="glass rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex gap-3">
     <div class="w-10 h-10 shrink-0 rounded-2xl bg-pink-100 grid place-items-center text-xl">🐷</div>
     <div class="flex-1 min-w-0">
-      <h2 class="text-sm font-semibold text-gray-600">저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></h2>
+      <h2 class="text-sm font-semibold text-gray-600 flex items-center gap-2 flex-wrap"><span>저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></span> ${teamPicker()}</h2>
       ${body}
     </div>
   </section>`;
@@ -879,6 +902,7 @@ function todayStatus() {
           ${ok ? '<span class="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full btn grid place-items-center text-[10px]"><i class="fa-solid fa-check"></i></span>' : ''}
         </div>
         <span class="mt-1.5 text-center text-[11px] whitespace-nowrap ${ok ? 'font-semibold' : 'text-gray-500'}">${esc(p.nick || '')}</span>
+        ${teamOf(id) ? `<span class="mt-0.5">${teamBadge(id)}</span>` : ''}
       </div>`;
     }).join('')}
     </div>
@@ -899,7 +923,7 @@ function reactBar(p, onPhoto) {
 
 // 모두의 인증샷: 인스타그램 게시물 비율(4:5), 왼쪽 아래에 올린 사람, 오른쪽 아래에 응원 반응
 function proofFeed() {
-  const shown = proofs; // 내보낸 멤버의 인증샷도 기록으로 남긴다
+  const shown = proofs.filter((p) => inMyScope(p.uid)); // 같은 팀 것만 (내보낸 멤버의 인증샷도 기록으로 남긴다)
   const card = (p) => {
     const who = whoOf(p);
     return `
@@ -918,7 +942,7 @@ function proofFeed() {
   return `
   <section class="mt-6 lg:mt-8">
     <div class="mb-3 flex items-center justify-between">
-      <h2 class="text-xl font-bold">📸 인증샷</h2>
+      <h2 class="text-xl font-bold flex items-center gap-2 flex-wrap">📸 인증샷 ${teamPicker()}</h2>
       <button data-action="go" data-view="todo" class="text-sm font-semibold text-brand">나도 인증하기 <i class="fa-solid fa-chevron-right text-xs"></i></button>
     </div>
     ${shown.length
@@ -1104,7 +1128,7 @@ function fineCard() {
   return `
   <section class="${CARD} mt-4 lg:mt-6">
     <div class="flex items-center justify-between gap-3">
-      <h2 class="text-lg font-bold"><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</h2>
+      <h2 class="text-lg font-bold flex items-center gap-2 flex-wrap"><span><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</span> ${teamPicker()}</h2>
       <button data-action="finesettings" class="text-sm text-gray-500"><i class="fa-solid fa-gear mr-1"></i>설정</button>
     </div>
     <p class="mt-1 text-xs text-gray-500 leading-relaxed">
@@ -1394,13 +1418,18 @@ function membersCard() {
       <h3 class="font-semibold">멤버 <span class="text-sm font-normal text-gray-500">${rows.length}명</span></h3>
       ${admin ? '<span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-gray-900 text-white"><i class="fa-solid fa-shield-halved mr-1"></i>관리자</span>' : ''}
     </div>
+    <p class="mt-1 text-xs text-gray-500">${[...TEAMS, ''].map((t) => `${teamLabel(t)} ${rows.filter((r) => teamOf(r.id) === t).length}명`).join(' · ')}${admin ? ' · 오른쪽에서 팀을 배정해요' : ''}</p>
     <ul class="mt-3 space-y-2 max-h-80 overflow-y-auto">${rows.map((r) => `
       <li class="flex items-center gap-3 p-2 rounded-2xl ${r.id === me ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
         ${avatar(r, 'w-9 h-9 text-sm')}
         <span class="flex-1 min-w-0 font-medium truncate">
-          ${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}${r.nick === ADMIN_NICK ? ' <i class="fa-solid fa-shield-halved text-xs text-gray-500" title="관리자"></i>' : ''}
+          ${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}${r.nick === ADMIN_NICK ? ' <i class="fa-solid fa-shield-halved text-xs text-gray-500" title="관리자"></i>' : ''}${admin ? '' : ` ${teamBadge(r.id)}`}
           ${admin ? `<span class="block text-xs font-normal ${realNames[r.id] ? 'text-gray-500' : 'text-red-500'}">${realNames[r.id] ? esc(realNames[r.id]) : '실명 미입력'}</span>` : ''}
         </span>
+        ${admin ? `
+        <select data-input="team" data-id="${r.id}" class="field shrink-0 rounded-xl px-2 py-1 text-xs font-semibold outline-none" aria-label="${esc(r.nick)} 팀 배정">
+          ${['', ...TEAMS].map((t) => `<option value="${t}" ${teamOf(r.id) === t ? 'selected' : ''}>${teamLabel(t)}</option>`).join('')}
+        </select>` : ''}
         ${r.grade
           ? `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${rank(r.grade) ? 'btn' : 'bg-white/80 text-gray-600'}">${r.grade.name}</span>`
           : '<i class="fa-solid fa-spinner fa-spin text-gray-400 text-xs"></i>'}
@@ -1863,6 +1892,7 @@ const actions = {
       toast('내보내지 못했어요 · ' + friendly(e));
     }
   },
+  teamview: (el) => { ui.teamView = el.dataset.team; render(); },
   unkick: async (el) => {
     const id = el.dataset.id, nick = settings.banned?.[id] || '';
     if (!isAdmin() || !confirm(`'${nick}' 님을 다시 멤버로 되돌릴까요?`)) return;
@@ -2116,6 +2146,16 @@ document.addEventListener('change', async (e) => {
       await updateProfile({ photo }, '프로필 사진을 바꿨어요');
     } catch (err) {
       toast(err.message);
+    }
+  }
+  if (t.dataset.input === 'team' && isAdmin()) {
+    const id = t.dataset.id, team = t.value, nick = profiles[id]?.nick || '';
+    try {
+      // 미배정으로 돌리면 필드를 지운다
+      await fb.f.setDoc(docRef('board', 'settings'), { teams: { [id]: team || fb.f.deleteField() } }, { merge: true });
+      toast(`${nick} 님을 ${teamLabel(team)}${team ? '으로 배정했어요' : '으로 돌렸어요'}`);
+    } catch (err) {
+      toast('팀을 바꾸지 못했어요 · ' + friendly(err));
     }
   }
   if (t.dataset.input === 'proof' && t.files?.[0]) {
