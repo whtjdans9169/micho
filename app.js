@@ -317,7 +317,7 @@ const ui = {
   statDay: today,
   statWeek: mondayOf(new Date()),
   fileFilter: 'all',
-  teamView: 'all', // 관리자가 고른 팀 보기 (all · 정 · 림)
+  teamView: 'all', // 관리자가 고른 팀 보기 (all · JUNG · LIM)
   feedLimit: FEED_PAGE,
   quote: null,
   paletteFor: null,
@@ -333,20 +333,20 @@ const isBanned = (id) => !!settings.banned?.[id];
 // 내보낸 멤버를 뺀 명단 (멤버 목록 · 벌금 현황에 쓰임. 인증샷 피드와 오늘 이미 한 인증은 남긴다)
 const activeMembers = () => Object.entries(profiles).filter(([id]) => !isBanned(id));
 
-// ---------- 팀 (관리자가 board/settings.teams 에 배정, 예: { uid: '정' }) ----------
+// ---------- 팀 (관리자가 board/settings.teams 에 배정, 예: { uid: 'JUNG' }) ----------
 // 인증샷 · 벌금 · 저금통은 같은 팀끼리만, 자료 · 멤버 명단 · 오늘의 인증 · 공지 · 명언은 모두에게
 // 미배정 멤버는 모두를 보고 모두에게 보인다 (팀을 나누기 전에는 지금처럼 다 함께)
-const TEAMS = ['정', '림'];
+const TEAMS = ['JUNG', 'LIM'];
 const teamOf = (id) => settings.teams?.[id] || '';
 const myTeam = () => teamOf(me);
 function inMyScope(id) {
   if (isAdmin()) return ui.teamView === 'all' || teamOf(id) === ui.teamView; // 관리자는 골라서 본다
   return !myTeam() || !teamOf(id) || teamOf(id) === myTeam();
 }
-const teamLabel = (t) => (t ? `${t} 팀` : '미배정');
+const teamLabel = (t) => (t ? `${t}팀` : '미배정');
 function teamBadge(id) {
   const t = teamOf(id);
-  return t ? `<span class="px-1.5 py-px rounded-md text-[10px] font-bold ${t === '정' ? 'bg-emerald-100 text-emerald-700' : 'bg-sky-100 text-sky-700'}">${t}</span>` : '';
+  return t ? `<span class="px-1.5 py-px rounded-md text-[10px] font-bold ${t === 'JUNG' ? 'bg-emerald-100 text-emerald-700' : 'bg-sky-100 text-sky-700'}">${t}</span>` : '';
 }
 // 관리자용 팀 보기 선택 (전체 · 정 팀 · 림 팀)
 function teamPicker() {
@@ -811,7 +811,7 @@ function piggyBank() {
   <section class="glass rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex gap-3">
     <div class="w-10 h-10 shrink-0 rounded-2xl bg-pink-100 grid place-items-center text-xl">🐷</div>
     <div class="flex-1 min-w-0">
-      <h2 class="text-sm font-semibold text-gray-600 flex items-center gap-2 flex-wrap"><span>저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></span> ${teamPicker()}</h2>
+      <h2 class="text-sm font-semibold text-gray-600 flex items-center gap-2 flex-wrap"><span>${!isAdmin() && myTeam() ? `${teamLabel(myTeam())} ` : ''}저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></span> ${teamPicker()}</h2>
       ${body}
     </div>
   </section>`;
