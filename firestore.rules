@@ -1,20 +1,65 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
     // 관리자(MICHO) 계정의 고유 ID
-    function isAdmin() {
-      return request.auth != null && request.auth.uid == 'JmFNoGhEQlW9MTrwkLOb6TCcGsg2';
-    }
+    function isAdmin() { return signedIn() && request.auth.uid == 'JmFNoGhEQlW9MTrwkLOb6TCcGsg2'; }
+    function isMe(uid) { return signedIn() && request.auth.uid == uid; }
 
-    // 실명: 본인은 자기 것만 쓰고 읽을 수 있고, 모두의 실명은 관리자만 읽을 수 있다
+    // 실명: 본인 것만 쓰고 읽기, 모두의 실명은 관리자만
     match /realnames/{uid} {
-      allow read: if isAdmin() || (request.auth != null && request.auth.uid == uid);
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if isAdmin() || isMe(uid);
+      allow write: if isMe(uid);
     }
-
-    // 그 밖의 데이터: 로그인한 사람은 모두 읽고 쓸 수 있다 (프로필, 기록, 명언, 공지, 자료, 인증샷)
-    match /{col}/{document=**} {
-      allow read, write: if request.auth != null && col != 'realnames';
+    // 프로필: 누구나 읽기, 본인만 수정
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow write: if isMe(uid);
+    }
+    // 공부 기록 · 할 일: 누구나 읽기 (벌금 계산), 본인만 수정 (관리자는 인증샷 삭제 때 날짜 정리)
+    match /data/{uid} {
+      allow read: if signedIn();
+      allow write: if isMe(uid) || isAdmin();
+    }
+    // 시험일 · 벌금 · 면제일 · 팀 · 내보내기: 관리자만 수정
+    match /board/settings {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    // 공지: 누구나
+    match /board/notice {
+      allow read, write: if signedIn();
+    }
+    // 명언: 본인 이름으로만 추가, 본인이나 관리자만 삭제
+    match /quotes/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+    // 인증샷 (id = 사용자_날짜): 본인이 올리고 지우기, 관리자도 지우기, 다른 사람은 응원 반응만
+    match /proofs/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && id.matches(request.auth.uid + '_.*') && request.resource.data.uid == request.auth.uid;
+      allow update: if signedIn() && (
+        id.matches(request.auth.uid + '_.*') ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reacts']));
+      allow delete: if isAdmin() || (signedIn() && id.matches(request.auth.uid + '_.*'));
+    }
+    match /proofPhotos/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || (signedIn() && id.matches(request.auth.uid + '_.*'));
+    }
+    // 자료: 누구나 올리기, 올린 사람이나 관리자만 지우기
+    match /files/{id} {
+      allow read, create: if signedIn();
+      allow update, delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      match /chunks/{c} {
+        allow read, create: if signedIn();
+        // 자료 정보를 먼저 지운 뒤 조각을 지운다
+        allow delete: if isAdmin() || (signedIn() && (
+          !exists(/databases/$(database)/documents/files/$(id)) ||
+          get(/databases/$(database)/documents/files/$(id)).data.uid == request.auth.uid));
+      }
     }
   }
 }

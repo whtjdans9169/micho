@@ -74,7 +74,11 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pad = (n) => String(n).padStart(2, '0');
 const uid = () => Math.random().toString(36).slice(2, 10);
-const dkey = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const dkey = (d = logicalNow()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// 하루의 시작: 새벽 4시. 늦게까지 공부해도 새벽 4시 전까지는 전날로 친다 (할 일 · 인증샷 · 공부 시간 · 벌금 모두)
+const DAY_START_H = 4;
+function logicalNow() { return new Date(Date.now() - DAY_START_H * 3600000); }
+const dayKeyOf = (ts) => dkey(new Date(ts - DAY_START_H * 3600000));
 const parseKey = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
 const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 const mondayOf = (d) => addDays(d, -((d.getDay() + 6) % 7));
@@ -313,9 +317,9 @@ const ui = {
   view: 'home',
   todoDate: today,
   statMode: 'day',
-  statMonth: monthOf(new Date()),
+  statMonth: monthOf(logicalNow()),
   statDay: today,
-  statWeek: mondayOf(new Date()),
+  statWeek: mondayOf(logicalNow()),
   fileFilter: 'all',
   teamView: 'all', // 관리자가 고른 팀 보기 (all · JUNG · LIM)
   feedLimit: FEED_PAGE,
@@ -394,13 +398,13 @@ async function updateProfile(patch, doneMsg) {
 // ============================================================
 // 공부 기록 계산
 // ============================================================
-// 자정을 넘는 구간을 날짜별로 나눈다
+// 하루가 바뀌는 시각(새벽 4시)을 넘는 구간을 날짜별로 나눈다
 function splitRange(s, e) {
   const out = [];
   while (s < e) {
-    const d = new Date(s);
-    const end = Math.min(e, addDays(d, 1).getTime());
-    out.push({ s, e: end, d: dkey(d) });
+    const d = dayKeyOf(s);
+    const end = Math.min(e, addDays(parseKey(d), 1).getTime() + DAY_START_H * 3600000);
+    out.push({ s, e: end, d });
     s = end;
   }
   return out;
@@ -468,13 +472,23 @@ function fineBase(id) {
   const p = profiles[id] || {};
   const data = (id === me ? D : allData[id]) || {};
   const todos = data.todos || {}, proofDays = new Set(data.proofDays || []);
-  const joined = p.createdAt ? dkey(new Date(p.createdAt)) : settings.fineStart;
+  const joined = p.createdAt ? dayKeyOf(p.createdAt) : settings.fineStart;
   let missed = 0;
   for (let d = parseKey(joined > settings.fineStart ? joined : settings.fineStart); dkey(d) < today; d = addDays(d, 1)) {
     const key = dkey(d), list = todos[key] || [];
+    if (isExempt(id, key)) continue; // 관리자가 정한 면제일
     if (!list.length || list.some((t) => !t.done) || !proofDays.has(key)) missed++;
   }
   return { missed, base: missed * settings.fine };
+}
+
+// 벌금 면제일: settings.exempt = { 'YYYY-MM-DD': { all: true, uids: { uid: true }, reason } } (관리자가 지정)
+const isExempt = (id, key) => { const x = settings.exempt?.[key]; return !!x && (x.all || !!x.uids?.[id]); };
+function exemptList() {
+  return Object.entries(settings.exempt || {}).sort(([a], [b]) => b.localeCompare(a)).map(([date, x]) => ({
+    date, reason: x.reason || '',
+    who: x.all ? '전체' : Object.keys(x.uids || {}).map((u) => profiles[u]?.nick || '탈퇴한 멤버').join(', '),
+  }));
 }
 function fineBoard() {
   if (!allData) return null;
@@ -833,6 +847,7 @@ function noticeBanner() {
 function homeView() {
   const ts = todoStats(today), q = ui.quote;
   return `
+  ${eveningReminder()}
   ${noticeBanner()}
   ${piggyBank()}
   <div class="grid gap-4 lg:gap-6 lg:grid-cols-5">
@@ -842,7 +857,7 @@ function homeView() {
           <span class="block text-[10px] text-white/80 truncate">${esc(ddayList()[0].name)}</span>
           <span class="block text-sm font-semibold">${ddayLabel()}</span>
         </button>
-        <div class="text-lg font-medium">${fmtDate(new Date())}</div>
+        <div class="text-lg font-medium">${fmtDate(parseKey(today))}</div>
         <button data-action="subjects" class="chip w-10 h-10 rounded-full grid place-items-center" aria-label="과목 편집"><i class="fa-solid fa-palette"></i></button>
       </div>
       <div class="flex-1 flex flex-col justify-center py-10 text-center">
@@ -875,7 +890,63 @@ function homeView() {
     </div>
   </div>
   ${todayStatus()}
+  ${weeklyReport()}
   ${proofFeed()}`;
+}
+
+// 저녁 알림: 밤 9시부터 하루가 끝나는 새벽 4시까지, 오늘 빠진 것이 있으면 홈 맨 위에 알려준다
+function missingToday() {
+  const list = todosOn(today), out = [];
+  if (!list.length) out.push('할 일 적기');
+  else if (list.some((t) => !t.done)) out.push(`남은 할 일 ${list.filter((t) => !t.done).length}개`);
+  if (!myProofs.some((p) => p.date === today)) out.push('인증샷');
+  return isExempt(me, today) ? [] : out;
+}
+function eveningReminder() {
+  const h = new Date().getHours();
+  const missing = missingToday();
+  if (!(h >= 21 || h < DAY_START_H) || !missing.length || today < settings.fineStart) return '';
+  return `
+  <button data-action="go" data-view="todo" class="w-full mb-4 lg:mb-6 p-4 rounded-3xl text-left flex items-center gap-3 bg-amber-100/90 text-amber-900 shadow-sm">
+    <span class="text-2xl">⏰</span>
+    <span class="flex-1 min-w-0">
+      <span class="block font-bold">오늘이 ${h < DAY_START_H ? '곧' : `${24 - h + DAY_START_H}시간 안에`} 끝나요!</span>
+      <span class="block text-sm">아직 ${missing.join(' · ')}이 남았어요 · 새벽 ${DAY_START_H}시가 지나면 벌금 ${won(settings.fine)}</span>
+    </span>
+    <i class="fa-solid fa-chevron-right"></i>
+  </button>`;
+}
+
+// 팀 주간 리포트: 지난주(월~일) 우리 팀의 인증률과 최다 인증 멤버. 개인 공부 시간은 보여주지 않는다
+function weeklyReport() {
+  if (!allData) return '';
+  const start = addDays(mondayOf(parseKey(today)), -7);
+  const days = [...Array(7)].map((_, i) => dkey(addDays(start, i)));
+  const members = activeMembers().filter(([id]) => inMyScope(id));
+  if (!members.length) return '';
+  const counts = members.map(([id, p]) => {
+    const pd = new Set(((id === me ? D : allData[id]) || {}).proofDays || []);
+    return { id, nick: p.nick || '', n: days.filter((d) => pd.has(d)).length };
+  });
+  const total = counts.reduce((a, c) => a + c.n, 0);
+  const rate = Math.round((total / (members.length * 7)) * 100);
+  const best = Math.max(...counts.map((c) => c.n));
+  const top = best ? counts.filter((c) => c.n === best).map((c) => c.nick) : [];
+  const scope = isAdmin() ? (ui.teamView === 'all' ? '전체' : teamLabel(ui.teamView)) : (myTeam() ? teamLabel(myTeam()) : '우리 스터디');
+  const end = parseKey(days[6]);
+  return `
+  <section class="glass rounded-3xl p-4 md:p-5 mt-4 lg:mt-6">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <h2 class="font-bold">📈 지난주 ${esc(scope)} 리포트</h2>
+      <span class="text-xs text-gray-500">${start.getMonth() + 1}/${start.getDate()} – ${end.getMonth() + 1}/${end.getDate()}</span>
+    </div>
+    <div class="mt-3 grid grid-cols-3 gap-2 text-center">
+      <div class="rounded-2xl bg-white/50 p-3"><div class="text-xs text-gray-500">인증률</div><div class="mt-1 text-2xl font-bold text-brand tabular-nums">${rate}%</div></div>
+      <div class="rounded-2xl bg-white/50 p-3"><div class="text-xs text-gray-500">인증샷</div><div class="mt-1 text-2xl font-bold tabular-nums">${total}<span class="text-sm font-medium text-gray-500">장</span></div></div>
+      <div class="rounded-2xl bg-white/50 p-3"><div class="text-xs text-gray-500">인원</div><div class="mt-1 text-2xl font-bold tabular-nums">${members.length}<span class="text-sm font-medium text-gray-500">명</span></div></div>
+    </div>
+    <p class="mt-3 text-sm">${top.length ? `🏆 최다 인증 <b>${top.map(esc).join(', ')}</b> · ${best}일` : '지난주에는 인증샷이 없었어요. 이번 주는 함께 달려봐요!'}</p>
+  </section>`;
 }
 
 // 오늘의 인증 현황: 인증한 멤버는 초록 테두리, 아직인 멤버는 흐리게
@@ -1129,11 +1200,16 @@ function fineCard() {
   <section class="${CARD} mt-4 lg:mt-6">
     <div class="flex items-center justify-between gap-3">
       <h2 class="text-lg font-bold flex items-center gap-2 flex-wrap"><span><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</span> ${teamPicker()}</h2>
-      <button data-action="finesettings" class="text-sm text-gray-500"><i class="fa-solid fa-gear mr-1"></i>설정</button>
+      ${isAdmin() ? `
+      <div class="flex gap-3 shrink-0">
+        <button data-action="exempt" class="text-sm text-gray-500"><i class="fa-solid fa-umbrella-beach mr-1"></i>면제일</button>
+        <button data-action="finesettings" class="text-sm text-gray-500"><i class="fa-solid fa-gear mr-1"></i>설정</button>
+      </div>` : ''}
     </div>
     <p class="mt-1 text-xs text-gray-500 leading-relaxed">
-      할 일을 안 적었거나, 다 끝내지 못했거나, 인증샷이 없는 날마다 ${won(settings.fine)} · ${fmtDateKo(parseKey(settings.fineStart))}부터 · 오늘 몫은 자정이 지나면 반영돼요
+      할 일을 안 적었거나, 다 끝내지 못했거나, 인증샷이 없는 날마다 ${won(settings.fine)} · ${fmtDateKo(parseKey(settings.fineStart))}부터 · 하루는 새벽 ${DAY_START_H}시에 끝나요 (그 전까지는 전날)
     </p>
+    ${exemptList().length ? `<p class="mt-1.5 text-xs text-gray-600"><i class="fa-solid fa-umbrella-beach text-brand mr-1"></i>면제일: ${exemptList().slice(0, 4).map((x) => `${parseKey(x.date).getMonth() + 1}/${parseKey(x.date).getDate()}${x.reason ? ` ${esc(x.reason)}` : ''}${x.who === '전체' ? '' : ` (${esc(x.who)})`}`).join(' · ')}${exemptList().length > 4 ? ' 외' : ''}</p>` : ''}
     ${rows ? `
       <ol class="mt-4 space-y-2">${rows.map((r, i) => `
         <li class="flex items-center gap-3 p-2.5 rounded-2xl ${r.id === me ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
@@ -1356,7 +1432,7 @@ function ddayManager() {
           <div class="text-xs text-gray-500">${fmtDateKo(parseKey(x.date))}${i === 0 ? ' · <b class="text-brand">홈에 표시</b>' : ''}</div>
         </div>
         ${x.shared
-          ? '<button data-action="dday" class="w-8 h-8 shrink-0 rounded-full text-gray-500" aria-label="시험일 바꾸기"><i class="fa-solid fa-pen text-sm"></i></button>'
+          ? (isAdmin() ? '<button data-action="dday" class="w-8 h-8 shrink-0 rounded-full text-gray-500" aria-label="시험일 바꾸기"><i class="fa-solid fa-pen text-sm"></i></button>' : '<span class="w-8 shrink-0"></span>')
           : `<button data-action="ddaydel" data-id="${x.id}" class="w-8 h-8 shrink-0 rounded-full text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>`}
         <i class="fa-solid fa-grip-lines w-6 text-center text-gray-400" aria-hidden="true"></i>
       </li>`).join('')}
@@ -1696,6 +1772,33 @@ function fineModal() {
     </form>`);
 }
 
+// 관리자: 벌금 면제일 (전체 또는 특정 멤버)
+function exemptModal() {
+  const list = exemptList();
+  openModal(`
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-bold">벌금 면제일</h3>
+      <button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <p class="mt-1 text-sm text-gray-500">명절 · 아픈 날 · 경조사처럼 벌금을 매기지 않을 날이에요. 지정하면 벌금 현황이 바로 다시 계산돼요.</p>
+    <form data-form="exempt" class="mt-4 space-y-2">
+      <input type="date" name="date" required class="${INPUT} !py-2.5">
+      <select name="who" class="${INPUT} !py-2.5">
+        <option value="">전체 멤버</option>
+        ${activeMembers().map(([id, p]) => `<option value="${id}">${esc(p.nick || '')}${realNames[id] ? ` (${esc(realNames[id])})` : ''}</option>`).join('')}
+      </select>
+      <input name="reason" maxlength="20" placeholder="사유 (예: 추석, 병원)" class="${INPUT} !py-2.5">
+      <button class="btn w-full py-2.5 rounded-2xl font-semibold"><i class="fa-solid fa-plus mr-1"></i>면제일 추가</button>
+    </form>
+    <ul class="mt-4 space-y-2">${list.length ? list.map((x) => `
+      <li class="flex items-center gap-3 p-2.5 rounded-2xl bg-white/50 text-sm">
+        <span class="font-semibold whitespace-nowrap">${fmtDateKo(parseKey(x.date))}</span>
+        <span class="flex-1 min-w-0 truncate text-gray-600">${esc(x.who)}${x.reason ? ` · ${esc(x.reason)}` : ''}</span>
+        <button data-action="exemptdel" data-date="${x.date}" class="w-7 text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
+      </li>`).join('') : '<li class="py-3 text-center text-sm text-gray-500">아직 면제일이 없어요</li>'}
+    </ul>`);
+}
+
 function myFineModal() {
   const { missed, base } = fineBase(me);
   const current = Math.max(0, base + (myProfile().fineAdjust || 0));
@@ -1838,6 +1941,7 @@ function profileModal() {
 const findSubject = (id) => D.subjects.find((x) => x.id === id);
 
 async function saveSettings(patch, doneMsg) {
+  if (!isAdmin()) return toast('관리자만 바꿀 수 있어요');
   try {
     await fb.f.setDoc(docRef('board', 'settings'), patch, { merge: true });
     settings = { ...settings, ...patch };
@@ -1852,8 +1956,17 @@ const actions = {
   go: (el) => go(el.dataset.view),
   toggle: (el) => toggleSubject(el.dataset.id),
   subjects: (el) => { ui.paletteFor = el.dataset.id || null; subjectModal(); },
-  dday: () => ddayModal(),
-  finesettings: () => fineModal(),
+  dday: () => { if (isAdmin()) ddayModal(); },
+  finesettings: () => { if (isAdmin()) fineModal(); },
+  exempt: () => { if (isAdmin()) exemptModal(); },
+  exemptdel: async (el) => {
+    if (!isAdmin() || !confirm(`${fmtDateKo(parseKey(el.dataset.date))} 면제일을 지울까요?`)) return;
+    try {
+      await fb.f.setDoc(docRef('board', 'settings'), { exempt: { [el.dataset.date]: fb.f.deleteField() } }, { merge: true });
+      delete settings.exempt[el.dataset.date];
+      exemptModal();
+    } catch (e) { toast('지우지 못했어요 · ' + friendly(e)); }
+  },
   ddaylist: () => { ui.ddayModal = true; openModal(ddayModalHtml()); mountSortables(); },
   ddaydel: (el) => {
     const x = ddayList().find((d) => d.id === el.dataset.id);
@@ -2049,6 +2162,20 @@ const forms = {
     const amount = Math.max(0, Number(f.elements.amount.value) || 0);
     $('#modal').innerHTML = '';
     updateProfile({ fineAdjust: amount - fineBase(me).base }, '내 벌금을 수정했어요');
+  },
+  exempt: async (f) => {
+    const date = f.elements.date.value, who = f.elements.who.value, reason = f.elements.reason.value.trim();
+    if (!date || !isAdmin()) return;
+    // 같은 날짜에 이미 전체 면제가 있으면 그대로, 특정 멤버면 그 멤버를 추가
+    const prev = settings.exempt?.[date] || {};
+    const entry = who ? { ...prev, uids: { ...(prev.uids || {}), [who]: true } } : { ...prev, all: true };
+    if (reason) entry.reason = reason;
+    try {
+      await fb.f.setDoc(docRef('board', 'settings'), { exempt: { [date]: entry } }, { merge: true });
+      settings.exempt = { ...(settings.exempt || {}), [date]: entry };
+      exemptModal();
+      toast('면제일을 추가했어요');
+    } catch (e) { toast('추가하지 못했어요 · ' + friendly(e)); }
   },
   fine: (f) => saveSettings({ fine: Math.max(0, Number(f.elements.fine.value) || 0), fineStart: f.elements.start.value }, '벌금 설정을 바꿨어요'),
   realname: async (f) => {
