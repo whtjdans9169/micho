@@ -333,7 +333,8 @@ const ui = {
 
 const myProfile = () => profiles[me] || { nick: ui.lastNick, goal: '', motto: '', photo: '' };
 const isAdmin = () => myProfile().nick === ADMIN_NICK;
-const isBanned = (id) => !!settings.banned?.[id];
+// 내보낸 멤버(banned)와 완전 삭제한 멤버(removed)는 들어올 수 없다
+const isBanned = (id) => !!settings.banned?.[id] || !!settings.removed?.[id];
 // 내보낸 멤버를 뺀 명단 (멤버 목록 · 벌금 현황에 쓰임. 인증샷 피드와 오늘 이미 한 인증은 남긴다)
 const activeMembers = () => Object.entries(profiles).filter(([id]) => !isBanned(id));
 
@@ -1518,7 +1519,8 @@ function membersCard() {
       <li class="flex items-center gap-3 p-2 rounded-2xl bg-white/30 text-gray-500">
         <i class="fa-solid fa-user-slash w-9 text-center"></i>
         <span class="flex-1 min-w-0 truncate"><span class="line-through">${esc(nick)}</span>${realNames[id] ? ` <span class="text-xs">(${esc(realNames[id])})</span>` : ''}</span>
-        <button data-action="unkick" data-id="${id}" class="px-3 py-1.5 rounded-full bg-white/80 text-xs font-semibold text-gray-700">되돌리기</button>
+        <button data-action="unkick" data-id="${id}" class="px-3 py-1.5 rounded-full bg-white/80 text-xs font-semibold text-gray-700 whitespace-nowrap">되돌리기</button>
+        <button data-action="purge" data-id="${id}" class="px-3 py-1.5 rounded-full bg-red-500 text-xs font-semibold text-white whitespace-nowrap">완전 삭제</button>
       </li>`).join('')}
     </ul>` : ''}
   </section>`;
@@ -2006,6 +2008,38 @@ const actions = {
     }
   },
   teamview: (el) => { ui.teamView = el.dataset.team; render(); },
+  // 내보낸 멤버의 데이터를 모두 지우고, 다시 들어오지 못하게 removed 에 남긴다 (자료 파일은 남김)
+  purge: async (el) => {
+    const id = el.dataset.id, nick = settings.banned?.[id] || '';
+    if (!isAdmin() || !confirm(`'${nick}' 님의 프로필 · 실명 · 공부 기록 · 인증샷 · 명언을 모두 지울까요?\n되돌릴 수 없어요. (자료 메뉴의 파일은 남아요)`)) return;
+    el.disabled = true;
+    el.textContent = '지우는 중…';
+    const { f, db } = fb;
+    try {
+      const mine = (col) => f.getDocs(f.query(f.collection(db, col), f.where('uid', '==', id)));
+      const [ps, qs] = await Promise.all([mine('proofs'), mine('quotes')]);
+      await Promise.all([
+        ...ps.docs.map((d) => Promise.all([f.deleteDoc(d.ref), f.deleteDoc(docRef('proofPhotos', d.id))])),
+        ...qs.docs.map((d) => f.deleteDoc(d.ref)),
+        f.deleteDoc(docRef('data', id)),
+        f.deleteDoc(docRef('users', id)),
+        f.deleteDoc(docRef('realnames', id)),
+      ]);
+      await f.setDoc(docRef('board', 'settings'), {
+        banned: { [id]: f.deleteField() },
+        teams: { [id]: f.deleteField() },
+        removed: { [id]: true },
+      }, { merge: true });
+      delete profiles[id];
+      delete realNames[id];
+      quoteList = quoteList.filter((q) => q.uid !== id);
+      toast(`${nick} 님의 데이터를 모두 지웠어요`);
+    } catch (e) {
+      el.disabled = false;
+      el.textContent = '완전 삭제';
+      toast('지우지 못했어요 · ' + friendly(e));
+    }
+  },
   unkick: async (el) => {
     const id = el.dataset.id, nick = settings.banned?.[id] || '';
     if (!isAdmin() || !confirm(`'${nick}' 님을 다시 멤버로 되돌릴까요?`)) return;

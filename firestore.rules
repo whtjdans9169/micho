@@ -10,11 +10,13 @@ service cloud.firestore {
     match /realnames/{uid} {
       allow read: if isAdmin() || isMe(uid);
       allow write: if isMe(uid);
+      allow delete: if isAdmin(); // 내보낸 멤버 완전 삭제
     }
-    // 프로필: 누구나 읽기, 본인만 수정
+    // 프로필: 누구나 읽기, 본인만 수정 (관리자는 내보낸 멤버 완전 삭제)
     match /users/{uid} {
       allow read: if signedIn();
       allow write: if isMe(uid);
+      allow delete: if isAdmin();
     }
     // 공부 기록 · 할 일: 누구나 읽기 (벌금 계산), 본인만 수정 (관리자는 인증샷 삭제 때 날짜 정리)
     match /data/{uid} {
