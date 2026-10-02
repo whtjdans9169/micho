@@ -377,6 +377,7 @@ function newData() {
     todos: {},    // { 'YYYY-MM-DD': [{ id, text, done }] }
     running: null, // { sid, s }
     proofDays: [], // 인증샷을 올린 날짜들
+    passes: [],    // 패스권을 쓴 날짜들 (일주일에 PASS_PER_WEEK번)
     goalHours: 0,  // 하루 목표 공부 시간 (0이면 설정 안 함)
   };
 }
@@ -478,6 +479,7 @@ function fineBase(id) {
   for (let d = parseKey(joined > settings.fineStart ? joined : settings.fineStart); dkey(d) < today; d = addDays(d, 1)) {
     const key = dkey(d), list = todos[key] || [];
     if (isExempt(id, key)) continue; // 관리자가 정한 면제일
+    if ((data.passes || []).includes(key)) continue; // 본인이 쓴 패스권
     if (!list.length || list.some((t) => !t.done) || !proofDays.has(key)) missed++;
   }
   return { missed, base: missed * settings.fine };
@@ -901,7 +903,7 @@ function missingToday() {
   if (!list.length) out.push('할 일 적기');
   else if (list.some((t) => !t.done)) out.push(`남은 할 일 ${list.filter((t) => !t.done).length}개`);
   if (!myProofs.some((p) => p.date === today)) out.push('인증샷');
-  return isExempt(me, today) ? [] : out;
+  return isExempt(me, today) || usedPass(today) ? [] : out;
 }
 function eveningReminder() {
   const h = new Date().getHours();
@@ -966,12 +968,14 @@ function todayStatus() {
     </div>
     <div class="mt-3 flex flex-wrap gap-x-3 gap-y-3 pb-1">${members.map(([id, p]) => {
       const ok = done.has(id);
+      const pass = !ok && ((id === me ? D : allData?.[id])?.passes || []).includes(today); // 오늘 패스권을 쓴 멤버
       // 닉네임은 줄이지 않고 전부 보여준다 (칸 너비가 닉네임에 맞춰 늘어나고, 넘치면 다음 줄로)
       return `
       <div class="min-w-[3.5rem] flex flex-col items-center">
         <div class="relative">
-          ${avatar(p, `w-12 h-12 text-sm ${ok ? 'ring-2 ring-brand ring-offset-2 ring-offset-transparent' : 'opacity-40 grayscale'}`)}
+          ${avatar(p, `w-12 h-12 text-sm ${ok ? 'ring-2 ring-brand ring-offset-2 ring-offset-transparent' : pass ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-transparent' : 'opacity-40 grayscale'}`)}
           ${ok ? '<span class="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full btn grid place-items-center text-[10px]"><i class="fa-solid fa-check"></i></span>' : ''}
+          ${pass ? '<span class="absolute -bottom-1 -right-1 text-base" title="오늘 패스">🎫</span>' : ''}
         </div>
         <span class="mt-1.5 text-center text-[11px] whitespace-nowrap ${ok ? 'font-semibold' : 'text-gray-500'}">${esc(p.nick || '')}</span>
         ${teamOf(id) ? `<span class="mt-0.5">${teamBadge(id)}</span>` : ''}
@@ -1083,6 +1087,38 @@ function updateLive() {
 // ---------- 할 일 ----------
 const isLocked = (key) => key < today; // 지난 날의 할 일은 고칠 수 없다 (벌금을 공정하게)
 
+// ---------- 패스권: 한 주(월~일)에 PASS_PER_WEEK번, 그날은 벌금 없음 ----------
+const PASS_PER_WEEK = 2;
+const usedPass = (key) => (D.passes || []).includes(key);
+// 그 날짜가 속한 주에 쓴 패스 날짜들
+function passesInWeek(key) {
+  const mon = dkey(mondayOf(parseKey(key))), sun = dkey(addDays(mondayOf(parseKey(key)), 6));
+  return (D.passes || []).filter((d) => d >= mon && d <= sun).sort();
+}
+function passBanner(key) {
+  const used = passesInWeek(key), left = PASS_PER_WEEK - used.length, on = usedPass(key), locked = isLocked(key);
+  const dots = [...Array(PASS_PER_WEEK)].map((_, i) => `<span class="w-2.5 h-2.5 rounded-full ${i < used.length ? 'bg-amber-400' : 'bg-white/80 ring-1 ring-gray-300'}"></span>`).join('');
+  if (on) {
+    return `
+    <div class="mt-4 rounded-3xl p-5 text-center bg-amber-100/90 text-amber-900">
+      <div class="text-3xl">🎫</div>
+      <div class="mt-1 text-lg font-bold">${key === today ? '오늘은' : '이날은'} 패스!</div>
+      <div class="text-sm">할 일 · 인증샷이 없어도 벌금이 붙지 않아요 · 이번 주 ${used.length}/${PASS_PER_WEEK}</div>
+      ${locked ? '' : '<button data-action="passoff" class="mt-3 px-4 py-2 rounded-full bg-white/80 text-sm font-semibold">패스 취소</button>'}
+    </div>`;
+  }
+  if (locked) return '';
+  return `
+  <div class="glass mt-4 rounded-3xl p-3 pl-4 flex items-center gap-3">
+    <span class="text-2xl">🎫</span>
+    <div class="flex-1 min-w-0">
+      <div class="font-semibold">패스권 <span class="text-sm font-normal text-gray-500">이번 주 ${left}장 남음</span></div>
+      <div class="mt-1 flex gap-1.5">${dots}</div>
+    </div>
+    <button data-action="passon" ${left ? '' : 'disabled'} class="px-4 py-2 rounded-full text-sm font-semibold ${left ? 'btn' : 'bg-white/60 text-gray-400'}">${key === today ? '오늘' : '이날'} 패스 쓰기</button>
+  </div>`;
+}
+
 function todoView() {
   const key = ui.todoDate, list = todosOn(key), s = todoStats(key), locked = isLocked(key);
   const arrow = (delta, icon, label) => `<button data-action="tododay" data-delta="${delta}" class="glass w-11 h-11 rounded-full grid place-items-center text-gray-600" aria-label="${label}"><i class="fa-solid ${icon}"></i></button>`;
@@ -1103,7 +1139,8 @@ function todoView() {
       </div>
       <div class="mt-5 h-3 rounded-full bg-white/25 overflow-hidden"><div class="h-full rounded-full bg-white transition-all duration-500" style="width:${s.pct}%"></div></div>
     </section>
-    ${proofBanner(key)}
+    ${passBanner(key)}
+    ${usedPass(key) ? '' : proofBanner(key)}
     ${locked
       ? '<p class="mt-4 px-4 py-3 rounded-2xl bg-white/50 text-sm text-gray-500"><i class="fa-solid fa-lock mr-1.5"></i>지난 날의 할 일은 고칠 수 없어요</p>'
       : `<form data-form="todoadd" class="mt-4 flex gap-2">
@@ -1157,7 +1194,7 @@ function proofBanner(key) {
       </div>` : ''}
     </div>`;
   }
-  if (key !== today) return '<div class="glass mt-4 rounded-3xl p-4 text-center text-sm text-gray-500"><i class="fa-solid fa-camera mr-1.5"></i>이날은 인증샷이 없어요</div>';
+  if (key !== today) return `<div class="glass mt-4 rounded-3xl p-4 text-center text-sm text-gray-500"><i class="fa-solid fa-camera mr-1.5"></i>${key > today ? '그날이 되면 인증샷을 올릴 수 있어요' : '이날은 인증샷이 없어요'}</div>`;
   const big = 'flex-1 py-3 rounded-2xl font-semibold text-center';
   return `
   <div class="glass mt-4 rounded-3xl p-6 flex flex-col items-center gap-3 text-center">
@@ -2108,6 +2145,23 @@ const actions = {
 
   tododay: (el) => { ui.todoDate = dkey(addDays(parseKey(ui.todoDate), Number(el.dataset.delta))); render(); },
   todotoday: () => { ui.todoDate = today; render(); },
+  passon: () => {
+    const k = ui.todoDate;
+    if (isLocked(k) || usedPass(k)) return;
+    if (passesInWeek(k).length >= PASS_PER_WEEK) return toast(`이번 주 패스권 ${PASS_PER_WEEK}장을 다 썼어요`);
+    if (!confirm(`${fmtDateKo(parseKey(k))}에 패스권을 쓸까요?\n이번 주 남은 패스: ${PASS_PER_WEEK - passesInWeek(k).length}장 → ${PASS_PER_WEEK - passesInWeek(k).length - 1}장`)) return;
+    D.passes = [...(D.passes || []), k].sort();
+    save();
+    render();
+    toast('🎫 패스! 이날은 벌금이 붙지 않아요');
+  },
+  passoff: () => {
+    const k = ui.todoDate;
+    if (isLocked(k) || !confirm('패스를 취소할까요? 패스권이 다시 돌아와요.')) return;
+    D.passes = (D.passes || []).filter((d) => d !== k);
+    save();
+    render();
+  },
   todotoggle: (el) => {
     if (isLocked(ui.todoDate)) return;
     const t = todosOn(ui.todoDate).find((x) => x.id === el.dataset.id);
