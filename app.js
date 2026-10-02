@@ -470,13 +470,15 @@ const ddayLabel = () => ddayText(ddayList()[0].date);
 
 // 벌금: 시작일(또는 가입일)부터 어제까지, 할 일을 안 적었거나 · 다 못 끝냈거나 · 인증샷이 없는 날마다 부과
 // 본인이 금액을 고치면 그 차이(fineAdjust)를 프로필에 저장해서, 이후 벌금은 그 위에 계속 더해진다
-function fineBase(id) {
+// from 을 주면 그 날짜부터만 센다 (이번 주 벌금 계산용)
+function fineBase(id, from = '') {
   const p = profiles[id] || {};
   const data = (id === me ? D : allData[id]) || {};
   const todos = data.todos || {}, proofDays = new Set(data.proofDays || []);
   const joined = p.createdAt ? dayKeyOf(p.createdAt) : settings.fineStart;
+  const start = [joined, settings.fineStart, from].sort().pop(); // 셋 중 가장 늦은 날부터
   let missed = 0;
-  for (let d = parseKey(joined > settings.fineStart ? joined : settings.fineStart); dkey(d) < today; d = addDays(d, 1)) {
+  for (let d = parseKey(start); dkey(d) < today; d = addDays(d, 1)) {
     const key = dkey(d), list = todos[key] || [];
     if (isExempt(id, key)) continue; // 관리자가 정한 면제일
     if ((data.passes || []).includes(key)) continue; // 본인이 쓴 패스권
@@ -502,6 +504,21 @@ function fineBoard() {
   }).sort((a, b) => b.amount - a.amount || a.nick.localeCompare(b.nick));
 }
 const won = (n) => n.toLocaleString('ko-KR') + '원';
+
+// 팀별 벌금 합계 (모두에게 공개: 팀끼리 자극이 되도록). week 면 이번 주 월요일부터만
+function teamFines(week = false) {
+  if (!allData) return null;
+  const from = week ? dkey(mondayOf(parseKey(today))) : '';
+  const groups = [...TEAMS, ''].map((t) => ({ team: t, total: 0, people: [] }));
+  for (const [id, p] of activeMembers()) {
+    const g = groups.find((x) => x.team === teamOf(id));
+    const { missed, base } = fineBase(id, from);
+    const amount = week ? base : Math.max(0, base + (p.fineAdjust || 0));
+    g.total += amount;
+    g.people.push({ id, nick: p.nick || '', missed, amount });
+  }
+  return groups.filter((g) => g.team || g.people.length); // 미배정은 사람이 있을 때만
+}
 
 // ============================================================
 // 로그인 흐름
@@ -828,10 +845,29 @@ function piggyBank() {
   <section class="glass rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex gap-3">
     <div class="w-10 h-10 shrink-0 rounded-2xl bg-pink-100 grid place-items-center text-xl">🐷</div>
     <div class="flex-1 min-w-0">
-      <h2 class="text-sm font-semibold text-gray-600 flex items-center gap-2 flex-wrap"><span>${!isAdmin() && myTeam() ? `${teamLabel(myTeam())} ` : ''}저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></span> ${teamPicker()}</h2>
+      <h2 class="text-sm font-semibold text-gray-600 flex items-center gap-2 flex-wrap"><span>${!isAdmin() && myTeam() ? `${teamLabel(myTeam())} ` : ''}저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></span> ${isAdmin() ? teamPicker() : ''}</h2>
       ${body}
+      ${teamRace()}
     </div>
   </section>`;
+}
+// 저금통 아래: JUNG팀 vs LIM팀 전체 벌금 비교 (팀이 배정된 뒤에만)
+function teamRace() {
+  const groups = teamFines();
+  if (!groups || !Object.keys(settings.teams || {}).length) return '';
+  const teams = groups.filter((g) => g.team);
+  const max = Math.max(1, ...teams.map((g) => g.total));
+  const color = (t) => (t === 'JUNG' ? 'bg-emerald-500' : 'bg-sky-500');
+  return `
+  <div class="mt-3 pt-3 border-t border-white/80 space-y-2">
+    <p class="text-xs font-semibold text-gray-600">팀별 저금통 <span class="font-normal text-gray-500">· 적을수록 잘하고 있어요!</span></p>
+    ${teams.map((g) => `
+    <div class="flex items-center gap-2 text-sm">
+      <span class="w-14 shrink-0 font-semibold">${teamLabel(g.team)}</span>
+      <div class="flex-1 h-2.5 rounded-full bg-white/70 overflow-hidden"><div class="h-full rounded-full ${color(g.team)}" style="width:${Math.round((g.total / max) * 100)}%"></div></div>
+      <span class="w-20 shrink-0 text-right font-bold tabular-nums">${won(g.total)}</span>
+    </div>`).join('')}
+  </div>`;
 }
 function noticeBanner() {
   return `
@@ -1228,7 +1264,39 @@ function statsView() {
       <div>${left}</div>
       <div class="space-y-4">${right}</div>
     </div>
-    ${fineCard()}`;
+    ${fineCard()}
+    ${weekFineCard()}`;
+}
+
+// 이번 주(월요일~어제) 걷을 벌금: 팀별 합계는 모두에게, 사람별 금액은 볼 수 있는 팀만
+function weekFineCard() {
+  const groups = teamFines(true);
+  if (!groups) return '';
+  const mon = mondayOf(parseKey(today)), sun = addDays(mon, 6);
+  const total = groups.reduce((a, g) => a + g.total, 0);
+  return `
+  <section class="${CARD} mt-4">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <h2 class="text-lg font-bold"><i class="fa-solid fa-wallet text-brand mr-1.5"></i>이번 주 걷을 벌금</h2>
+      <span class="text-xs text-gray-500">${mon.getMonth() + 1}/${mon.getDate()}(월) – ${sun.getMonth() + 1}/${sun.getDate()}(일)</span>
+    </div>
+    <p class="mt-1 text-xs text-gray-500">월요일부터 어제까지 쌓인 벌금이에요 · 오늘 몫은 새벽 ${DAY_START_H}시가 지나면 더해져요</p>
+    <div class="mt-4 grid gap-3 ${groups.length > 1 ? 'sm:grid-cols-2' : ''}">${groups.map((g) => {
+      const visible = g.people.filter((x) => inMyScope(x.id) && x.amount);
+      return `
+      <div class="rounded-2xl bg-white/50 p-4">
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="font-semibold">${teamLabel(g.team)} <span class="text-xs font-normal text-gray-500">${g.people.length}명</span></span>
+          <span class="text-xl font-bold tabular-nums ${g.total ? '' : 'text-brand'}">${won(g.total)}</span>
+        </div>
+        ${visible.length ? `<ul class="mt-2 space-y-1 text-sm">${visible.map((x) => `
+          <li class="flex justify-between gap-2"><span class="truncate">${esc(x.nick)}${x.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span><span class="tabular-nums text-gray-600 whitespace-nowrap">${x.missed}일 · ${won(x.amount)}</span></li>`).join('')}
+        </ul>` : `<p class="mt-2 text-xs text-gray-500">${g.total ? '다른 팀의 사람별 금액은 볼 수 없어요' : '이번 주는 아직 벌금이 없어요 👏'}</p>`}
+      </div>`;
+    }).join('')}
+    </div>
+    <p class="mt-3 text-right text-sm text-gray-600">이번 주 합계 <b class="text-brand">${won(total)}</b></p>
+  </section>`;
 }
 
 // 모두에게 보이는 벌금 순위 (공부 시간 같은 통계는 위쪽에 나만 보인다)
