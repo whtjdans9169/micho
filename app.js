@@ -1114,6 +1114,7 @@ function passBanner(key) {
     <div class="flex-1 min-w-0">
       <div class="font-semibold">패스권 <span class="text-sm font-normal text-gray-500">이번 주 ${left}장 남음</span></div>
       <div class="mt-1 flex gap-1.5">${dots}</div>
+      <p class="mt-1.5 text-xs text-gray-500 leading-relaxed">야근하거나, 오늘 너무 피곤할 때 쓰는 카드<br>일주일(월~일)에 ${PASS_PER_WEEK}번만 쓸 수 있어요</p>
     </div>
     <button data-action="passon" ${left ? '' : 'disabled'} class="px-4 py-2 rounded-full text-sm font-semibold ${left ? 'btn' : 'bg-white/60 text-gray-400'}">${key === today ? '오늘' : '이날'} 패스 쓰기</button>
   </div>`;
