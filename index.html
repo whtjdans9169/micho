@@ -37,7 +37,12 @@
   </script>
   <style>
     /* 앱처럼 쓰도록 두 손가락 확대 · 두 번 탭 확대를 막는다 */
-    html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
+    html, body { touch-action: pan-y; -webkit-text-size-adjust: 100%; }
+    /* 화면이 좌우로 밀리지 않게 (아이폰 Safari는 날짜 입력칸을 넓게 그려서 카드가 화면보다 커질 수 있다) */
+    html, body { max-width: 100%; overflow-x: hidden; }
+    #app { overflow-x: clip; }
+    input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 100%; display: block; }
+    input[type="date"]::-webkit-date-and-time-value { text-align: left; }
     body {
       font-family: Pretendard, system-ui, sans-serif;
       -webkit-tap-highlight-color: transparent;

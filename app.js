@@ -890,7 +890,7 @@ function homeView() {
   ${eveningReminder()}
   ${noticeBanner()}
   ${piggyBank()}
-  <div class="grid gap-4 lg:gap-6 lg:grid-cols-5">
+  <div class="grid grid-cols-1 gap-4 lg:gap-6 lg:grid-cols-5">
     <section class="glass-hero rounded-[2rem] p-6 md:p-8 lg:col-span-3 flex flex-col lg:min-h-[440px]">
       <div class="flex items-center justify-between">
         <button data-action="ddaylist" class="chip px-3.5 py-1 rounded-2xl text-left leading-tight max-w-[40%]" aria-label="D-Day 목록">
@@ -1059,7 +1059,7 @@ function proofFeed() {
       <button data-action="go" data-view="todo" class="text-sm font-semibold text-brand">나도 인증하기 <i class="fa-solid fa-chevron-right text-xs"></i></button>
     </div>
     ${shown.length
-      ? `<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">${shown.map(card).join('')}</div>
+      ? `<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">${shown.map(card).join('')}</div>
          ${proofs.length >= ui.feedLimit ? '<button data-action="feedmore" class="glass mt-4 w-full py-3 rounded-2xl text-gray-600">더 보기</button>' : ''}`
       : '<div class="glass rounded-3xl p-8 text-center text-gray-500">아직 인증샷이 없어요. 할 일을 끝내고 첫 인증샷을 올려보세요!</div>'}
   </section>`;
@@ -1249,7 +1249,7 @@ function proofBanner(key) {
 }
 
 // ---------- 통계 ----------
-const CARD = 'glass rounded-3xl p-5 md:p-6';
+const CARD = 'glass rounded-3xl p-5 md:p-6 min-w-0';
 const summ = (label, value) => `<div><div class="text-xs text-gray-500">${label}</div><div class="mt-1 text-lg font-bold tabular-nums">${value}</div></div>`;
 
 function statsView() {
@@ -1261,7 +1261,7 @@ function statsView() {
     : [monthGrid(totals), ui.statMode === 'day' ? dayStats() : monthStats(totals)];
   return `
     ${pageTitle('통계', `<div class="glass rounded-full p-1 flex">${tabs}</div>`)}
-    <div class="grid gap-4 lg:gap-6 lg:grid-cols-2 lg:items-start">
+    <div class="grid grid-cols-1 gap-4 lg:gap-6 lg:grid-cols-2 lg:items-start">
       <div>${left}</div>
       <div class="space-y-4">${right}</div>
     </div>
@@ -1528,7 +1528,7 @@ async function fileUrl(f) {
 function ddayManager() {
   const list = ddayList();
   return `
-    <div class="flex items-center justify-between gap-2">
+    <div class="flex items-center justify-between gap-x-2 flex-wrap">
       <h3 class="font-semibold">D-Day</h3>
       <span class="text-xs text-gray-500">꾹 눌러 옮기기 · 맨 윗줄이 홈에 보여요</span>
     </div>
@@ -1662,7 +1662,7 @@ function profileView() {
     </div>
     ${progress}
   </section>
-  <div class="mt-4 grid gap-4 md:grid-cols-2">
+  <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
     <section class="${CARD}">
       <div class="flex justify-between items-center">
         <h3 class="font-semibold">시험 전 나의 목표</h3>
