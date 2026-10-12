@@ -1061,20 +1061,18 @@ function reactWhoModal(p, focus) {
 // 모두의 인증샷: 1:1 정사각형, 왼쪽 아래에 올린 사람, 오른쪽 아래에 응원 반응
 function proofFeed() {
   const shown = proofs.filter((p) => inMyScope(p.uid)); // 같은 팀 것만 (내보낸 멤버의 인증샷도 기록으로 남긴다)
+  // 인스타그램처럼 3열 격자. 칸이 작아서 사진 위에는 작은 프로필과 반응 수만, 누르면 크게 보기
   const card = (p) => {
     const who = whoOf(p);
+    const reacts = REACTS.reduce((a, [k]) => a + Object.keys(p.reacts?.[k] || {}).length, 0);
     return `
-    <div class="glass relative rounded-3xl overflow-hidden">
-      <button data-action="openproof" data-id="${p.id}" class="block w-full"><img data-proof="${p.id}" src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-square object-cover"></button>
-      <div class="absolute inset-x-0 bottom-0 p-3 pt-12 flex items-end gap-2.5 text-white bg-gradient-to-t from-black/60 to-transparent pointer-events-none">
-        ${avatar(who, 'w-9 h-9 text-sm ring-2 ring-white/80')}
-        <div class="min-w-0 flex-1">
-          <div class="font-semibold truncate">${esc(who.nick)}</div>
-          <div class="text-xs text-white/80">${fmtDateKo(parseKey(p.date))}</div>
-        </div>
-        <div class="flex gap-1 pointer-events-auto">${reactBar(p, true)}</div>
-      </div>
-    </div>`;
+    <button data-action="openproof" data-id="${p.id}" class="relative block aspect-square overflow-hidden bg-white/40" aria-label="${esc(who.nick)}님의 인증샷">
+      <img src="${p.thumb}" alt="" loading="lazy" class="w-full h-full object-cover">
+      <span class="absolute inset-x-0 bottom-0 p-1.5 pt-6 flex items-end justify-between gap-1 bg-gradient-to-t from-black/50 to-transparent text-white">
+        ${avatar(who, 'w-6 h-6 text-[10px] ring-1 ring-white/80')}
+        ${reacts ? `<span class="px-1.5 rounded-full bg-black/35 text-[11px] font-semibold">❤️ ${reacts}</span>` : ''}
+      </span>
+    </button>`;
   };
   return `
   <section class="mt-6 lg:mt-8">
@@ -1083,7 +1081,7 @@ function proofFeed() {
       <button data-action="go" data-view="todo" class="text-sm font-semibold text-brand">나도 인증하기 <i class="fa-solid fa-chevron-right text-xs"></i></button>
     </div>
     ${shown.length
-      ? `<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">${shown.map(card).join('')}</div>
+      ? `<div class="grid grid-cols-3 gap-0.5 md:gap-1.5 rounded-2xl overflow-hidden">${shown.map(card).join('')}</div>
          ${proofs.length >= ui.feedLimit ? '<button data-action="feedmore" class="glass mt-4 w-full py-3 rounded-2xl text-gray-600">더 보기</button>' : ''}`
       : '<div class="glass rounded-3xl p-8 text-center text-gray-500">아직 인증샷이 없어요. 할 일을 끝내고 첫 인증샷을 올려보세요!</div>'}
   </section>`;
