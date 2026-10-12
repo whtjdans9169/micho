@@ -224,8 +224,8 @@ async function deleteFile(file) {
 // 인증한 날짜는 내 기록(D.proofDays)에도 적어서, 벌금 계산 때 모두의 인증샷 목록을 읽지 않아도 되게 한다
 const photoCache = {};
 async function saveProof(file) {
-  const photo = (await shrinkImage(file, 1000, 0.8)).toDataURL('image/jpeg', QUALITY); // 인스타그램 4:5
-  const thumb = (await shrinkImage(file, 300, 0.8)).toDataURL('image/jpeg', QUALITY);
+  const photo = (await shrinkImage(file, 1200)).toDataURL('image/jpeg', QUALITY);    // 원본 비율 (크게 보기에서 한 번 더 누르면)
+  const thumb = (await shrinkImage(file, 300, 1)).toDataURL('image/jpeg', QUALITY); // 1:1 정사각형 (목록용)
   const id = `${me}_${today}`;
   await fb.f.setDoc(docRef('proofPhotos', id), { photo });
   await fb.f.setDoc(docRef('proofs', id), { uid: me, nick: myProfile().nick, date: today, at: Date.now(), thumb });
@@ -1030,18 +1030,42 @@ function reactBar(p, onPhoto) {
     const tone = onPhoto
       ? (mine ? 'bg-white text-gray-900' : 'bg-black/30 text-white')
       : (mine ? 'btn' : 'bg-white/70');
-    return `<button data-action="react" data-id="${p.id}" data-r="${key}" class="px-2 h-8 rounded-full text-sm backdrop-blur ${tone}" aria-label="${emoji} 반응">${emoji}${n ? ` <span class="text-xs font-semibold">${n}</span>` : ''}</button>`;
+    // 이모지를 누르면 반응, 숫자를 누르면 누가 눌렀는지 보기
+    return `<span class="inline-flex items-center h-8 rounded-full text-sm backdrop-blur ${tone}">
+      <button data-action="react" data-id="${p.id}" data-r="${key}" class="${n ? 'pl-2 pr-1' : 'px-2'} h-full" aria-label="${emoji} 반응">${emoji}</button>${n ? `<button data-action="reactwho" data-id="${p.id}" data-r="${key}" class="pr-2 pl-0.5 h-full text-xs font-semibold underline decoration-dotted underline-offset-2" aria-label="${emoji} 누른 사람 보기">${n}</button>` : ''}
+    </span>`;
   }).join('');
 }
+// 반응한 사람 목록 (종류별)
+function reactWhoModal(p, focus) {
+  const back = ui.openProof === p.id;
+  openModal(`
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-bold">응원한 사람</h3>
+      <button data-action="${back ? 'proofback' : 'closemodal'}" data-id="${p.id}" class="w-8 h-8 text-gray-500" aria-label="${back ? '뒤로' : '닫기'}"><i class="fa-solid ${back ? 'fa-arrow-left' : 'fa-xmark'} text-lg"></i></button>
+    </div>
+    <div class="mt-4 space-y-4">${REACTS.map(([key, emoji]) => {
+      const ids = Object.keys(p.reacts?.[key] || {});
+      if (!ids.length) return '';
+      return `
+      <section class="${key === focus ? '' : 'opacity-80'}">
+        <h4 class="text-sm font-semibold text-gray-600">${emoji} ${ids.length}명</h4>
+        <ul class="mt-2 flex flex-wrap gap-2">${ids.map((id) => {
+          const who = profiles[id] || { nick: '알 수 없음' };
+          return `<li class="flex items-center gap-1.5 pl-1 pr-3 py-1 rounded-full bg-white/70 text-sm">${avatar(who, 'w-6 h-6 text-[10px]')}${esc(who.nick)}${id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</li>`;
+        }).join('')}</ul>
+      </section>`;
+    }).join('')}</div>`);
+}
 
-// 모두의 인증샷: 인스타그램 게시물 비율(4:5), 왼쪽 아래에 올린 사람, 오른쪽 아래에 응원 반응
+// 모두의 인증샷: 1:1 정사각형, 왼쪽 아래에 올린 사람, 오른쪽 아래에 응원 반응
 function proofFeed() {
   const shown = proofs.filter((p) => inMyScope(p.uid)); // 같은 팀 것만 (내보낸 멤버의 인증샷도 기록으로 남긴다)
   const card = (p) => {
     const who = whoOf(p);
     return `
     <div class="glass relative rounded-3xl overflow-hidden">
-      <button data-action="openproof" data-id="${p.id}" class="block w-full"><img data-proof="${p.id}" src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-[4/5] object-cover"></button>
+      <button data-action="openproof" data-id="${p.id}" class="block w-full"><img data-proof="${p.id}" src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-square object-cover"></button>
       <div class="absolute inset-x-0 bottom-0 p-3 pt-12 flex items-end gap-2.5 text-white bg-gradient-to-t from-black/60 to-transparent pointer-events-none">
         ${avatar(who, 'w-9 h-9 text-sm ring-2 ring-white/80')}
         <div class="min-w-0 flex-1">
@@ -1200,7 +1224,7 @@ function todoView() {
       <h3 class="mb-3 text-lg font-bold">나의 인증샷 <span class="text-sm font-normal text-gray-500">${myProofs.length}</span></h3>
       <div class="grid grid-cols-3 gap-2">${myProofs.map((p) => `
         <button data-action="openproof" data-id="${p.id}" class="relative rounded-xl overflow-hidden">
-          <img src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-[4/5] object-cover">
+          <img src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-square object-cover">
           <span class="absolute left-1.5 bottom-1.5 px-1.5 rounded-md bg-black/45 text-white text-[11px]">${parseKey(p.date).getMonth() + 1}/${parseKey(p.date).getDate()}</span>
         </button>`).join('')}
       </div>
@@ -1220,7 +1244,7 @@ function proofBanner(key) {
     const small = 'px-3.5 py-2 rounded-full bg-white/80 text-sm font-semibold text-center whitespace-nowrap';
     return `
     <div class="glass mt-4 rounded-3xl p-3 flex items-center gap-4">
-      <button data-action="openproof" data-id="${mine.id}" class="shrink-0"><img src="${mine.thumb}" alt="" class="w-20 aspect-[4/5] rounded-2xl object-cover"></button>
+      <button data-action="openproof" data-id="${mine.id}" class="shrink-0"><img src="${mine.thumb}" alt="" class="w-20 aspect-square rounded-2xl object-cover"></button>
       <div class="flex-1 min-w-0">
         <div class="font-bold text-brand"><i class="fa-solid fa-circle-check mr-1"></i>인증 완료</div>
         <div class="mt-0.5 text-sm text-gray-500 whitespace-nowrap">${fmtClock(mine.at)}</div>
@@ -1935,8 +1959,11 @@ function proofModal(p) {
       </div>
       <button data-action="closemodal" class="w-8 h-8 shrink-0 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
     </div>
-    <img data-proof="${p.id}" src="${p.thumb}" alt="" class="mt-4 w-full aspect-[4/5] object-cover rounded-2xl">
-    <div class="mt-3 flex gap-1.5">${reactBar(p, false)}</div>
+    <button data-action="prooftoggle" class="mt-4 block w-full rounded-2xl overflow-hidden bg-white/40" aria-label="원본 비율로 보기">
+      <img data-proof="${p.id}" src="${p.thumb}" alt="" class="w-full aspect-square object-cover">
+    </button>
+    <p data-proofhint class="mt-1.5 text-center text-xs text-gray-500">사진을 누르면 원본 비율로 볼 수 있어요</p>
+    <div class="mt-2 flex gap-1.5">${reactBar(p, false)}</div>
     ${p.uid === me || isAdmin() ? `<button data-action="proofdel" data-id="${p.id}" class="mt-4 w-full py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1.5"></i>인증샷 삭제${p.uid === me ? '' : ' (관리자)'}</button>` : ''}`);
   ui.openProof = p.id;
   hydrateProofs();
@@ -2085,6 +2112,23 @@ const actions = {
   },
   goal: () => goalModal(),
   goalclear: () => { D.goalHours = 0; save(); closeModal(); },
+  // 크게 보기: 정사각형 ↔ 원본 비율
+  prooftoggle: (el) => {
+    const img = el.querySelector('img'), square = img.classList.toggle('aspect-square');
+    img.classList.toggle('object-cover', square);
+    img.classList.toggle('object-contain', !square);
+    img.classList.toggle('max-h-[70vh]', !square);
+    const hint = $('[data-proofhint]');
+    if (hint) hint.textContent = square ? '사진을 누르면 원본 비율로 볼 수 있어요' : '한 번 더 누르면 정사각형으로 돌아가요';
+  },
+  reactwho: (el) => {
+    const p = [...proofs, ...myProofs].find((x) => x.id === el.dataset.id);
+    if (p) reactWhoModal(p, el.dataset.r);
+  },
+  proofback: (el) => {
+    const p = [...proofs, ...myProofs].find((x) => x.id === el.dataset.id);
+    if (p) proofModal(p);
+  },
   react: async (el) => {
     const { id, r } = el.dataset;
     const all = [...proofs, ...myProofs, ...todayProofs].filter((x) => x.id === id);
