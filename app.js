@@ -36,11 +36,11 @@ const PALETTE = [
 // 출석: 앱에 접속한 날 / 달성: 그날 할 일을 100% 끝내고 인증샷까지 올린 날
 const GRADES = [
   { name: '수련생', att: 0, ach: 0 },
-  { name: 'D등급', att: 3, ach: 1 },
-  { name: 'C등급', att: 7, ach: 3 },
-  { name: 'B등급', att: 14, ach: 7 },
-  { name: 'A등급', att: 30, ach: 15 },
-  { name: 'S등급', att: 60, ach: 30 },
+  { name: 'AD1', att: 3, ach: 1 },
+  { name: 'AD2', att: 7, ach: 3 },
+  { name: 'AP3', att: 14, ach: 7 },
+  { name: 'AP4', att: 30, ach: 15 },
+  { name: 'AP5', att: 60, ach: 30 },
 ];
 
 const SEED_QUOTES = [
@@ -594,6 +594,43 @@ async function enter(id) {
   loadEveryone(); // 홈 저금통에 쓸 모두의 벌금
   askRealName();
   markVisit();
+}
+
+// 레벨업 축하: 지난번에 축하한 등급(D.lastGrade)보다 지금 등급이 높아지면 폭죽 + 축하 창
+function checkLevelUp() {
+  if (!me || !D || $('#modal').innerHTML) return;
+  const now = GRADES.indexOf(gradeInfo().grade), seen = D.lastGrade ?? 0;
+  if (now <= seen) {
+    if (now < seen) { D.lastGrade = now; save(); } // 등급이 내려가면 기준만 맞춰둔다
+    return;
+  }
+  D.lastGrade = now;
+  save();
+  levelUpModal(GRADES[now]);
+}
+function levelUpModal(grade) {
+  const g = gradeInfo();
+  openModal(`
+    <div class="text-center py-2">
+      <div class="text-6xl animate-bounce">🎉</div>
+      <h3 class="mt-3 text-2xl font-extrabold">축하해요!</h3>
+      <p class="mt-1 text-lg font-semibold">레벨업 하셨어요!</p>
+      <div class="mt-5 inline-flex items-center gap-3 px-5 py-3 rounded-2xl bg-white/70">
+        <span class="text-sm text-gray-500">새 등급</span>
+        <span class="btn px-4 py-1.5 rounded-full text-xl font-extrabold tracking-wide">${grade.name}</span>
+      </div>
+      <p class="mt-4 text-sm text-gray-600">출석 ${g.att}일 · 달성 ${g.ach}일${g.next ? `<br>다음 등급 <b>${g.next.name}</b>까지 출석 ${Math.max(0, g.next.att - g.att)}일 · 달성 ${Math.max(0, g.next.ach - g.ach)}일 남았어요` : '<br>최고 등급이에요! 합격까지 이대로 가요 💪'}</p>
+      <button data-action="closemodal" class="btn mt-6 w-full py-3 rounded-2xl font-semibold">계속 달리기 🔥</button>
+    </div>`);
+  fireConfetti();
+}
+function fireConfetti() {
+  if (!window.confetti) return;
+  const colors = ['#3ED296', '#1F9D66', '#FDE68A', '#F9A8D4', '#7DD3FC', '#ffffff'];
+  const shot = (o) => confetti({ particleCount: 90, spread: 75, startVelocity: 45, colors, zIndex: 9999, ...o });
+  shot({ origin: { x: 0.5, y: 0.6 } });
+  setTimeout(() => { shot({ angle: 60, origin: { x: 0, y: 0.7 } }); shot({ angle: 120, origin: { x: 1, y: 0.7 } }); }, 250);
+  setTimeout(() => shot({ particleCount: 140, spread: 120, origin: { x: 0.5, y: 0.35 } }), 600);
 }
 
 // 출석: 오늘 앱에 접속했다고 기록 (하루에 한 번만 저장)
@@ -2525,6 +2562,7 @@ document.addEventListener('change', async (e) => {
 ['gesturestart', 'gesturechange'].forEach((type) => document.addEventListener(type, (e) => e.preventDefault()));
 
 setInterval(updateLive, 1000);
+setInterval(checkLevelUp, 3000); // 할 일 체크 · 인증샷 · 접속으로 등급이 오르면 축하 (다른 창이 열려 있으면 닫힌 뒤에)
 
 // ============================================================
 // 시작
