@@ -1084,11 +1084,8 @@ function balanceNames() {
     const nick = el.dataset.nick;
     el.textContent = nick;
     if (el.scrollWidth <= el.clientWidth + 1) return; // 한 줄에 들어감
+    const cut = nickCut(nick);
     const chars = [...nick];
-    let cut = Math.floor((chars.length - 1) / 2); // 앞줄이 짧게
-    // 띄어쓰기가 있으면 가운데보다 앞쪽에서 가장 가까운 띄어쓰기에서 나눈다
-    const spaces = chars.map((c, i) => (c === ' ' ? i : -1)).filter((i) => i > 0 && i <= cut + 1);
-    if (spaces.length) cut = spaces[spaces.length - 1];
     const first = chars.slice(0, cut).join('').trim(), second = chars.slice(cut).join('').trim();
     el.textContent = '';
     el.append(first, document.createElement('br'), second);
@@ -1098,6 +1095,24 @@ function balanceNames() {
   });
 }
 addEventListener('resize', () => balanceNames());
+
+// 닉네임을 두 줄로 나눌 위치 (앞줄 글자 수)
+// 띄어쓰기 > 말이 끝나는 글자(-서 · -면 · -고 · -가 …) 뒤 > 그냥 가운데 순으로 고르고,
+// 그중 두 줄 길이가 비슷한 곳, 같다면 둘째 줄이 긴 쪽을 고른다
+// 예) 건축사따서/탈건하자 · 너가붙으면/배가아플거같아 · 내가건축사가/될상인가
+const WORD_ENDS = new Set([...'서면고는은을를이가에의도와과로게지니며야요다랑께']);
+function nickCut(nick) {
+  const chars = [...nick], n = chars.length;
+  let best = Math.floor((n - 1) / 2), bestScore = Infinity;
+  for (let i = 2; i <= n - 2; i++) { // 앞뒤 모두 두 글자 이상
+    const prev = chars[i - 1];
+    const bonus = prev === ' ' || chars[i] === ' ' ? 3 : WORD_ENDS.has(prev) ? 2 : 0; // 자연스럽게 끊기는 곳
+    const diff = Math.abs(n - 2 * i);              // 두 줄 길이 차이
+    const score = diff + (i > n - i ? 1 : 0) - bonus * 2; // 앞줄이 더 길면 조금 감점
+    if (score < bestScore) { bestScore = score; best = i; }
+  }
+  return best;
+}
 
 // 인증샷 응원 반응 (누가 눌렀는지 reacts.{종류}.{id} 에 기록)
 const REACTS = [['fire', '🔥'], ['clap', '👏'], ['heart', '❤️']];
