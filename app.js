@@ -754,6 +754,8 @@ function render() {
     updateLive();
     hydrateProofs();
     mountSortables();
+    balanceNames();
+    setTimeout(balanceNames, 80); // 스타일 · 글꼴이 다 적용된 뒤에 한 번 더 잰다
   }
 }
 
@@ -1076,6 +1078,27 @@ function todayStatus() {
   </section>`;
 }
 
+// 인증샷 격자의 닉네임: 한 줄에 안 들어가면 두 줄로, 둘째 줄이 더 길게 (너가붙으면 / 배가아플거같아)
+function balanceNames() {
+  document.querySelectorAll('[data-nick]').forEach((el) => {
+    const nick = el.dataset.nick;
+    el.textContent = nick;
+    if (el.scrollWidth <= el.clientWidth + 1) return; // 한 줄에 들어감
+    const chars = [...nick];
+    let cut = Math.floor((chars.length - 1) / 2); // 앞줄이 짧게
+    // 띄어쓰기가 있으면 가운데보다 앞쪽에서 가장 가까운 띄어쓰기에서 나눈다
+    const spaces = chars.map((c, i) => (c === ' ' ? i : -1)).filter((i) => i > 0 && i <= cut + 1);
+    if (spaces.length) cut = spaces[spaces.length - 1];
+    const first = chars.slice(0, cut).join('').trim(), second = chars.slice(cut).join('').trim();
+    el.textContent = '';
+    el.append(first, document.createElement('br'), second);
+    // 둘째 줄도 넘치면 글자를 조금 줄인다
+    el.style.fontSize = '';
+    if (el.scrollWidth > el.clientWidth + 1) el.style.fontSize = '9.5px';
+  });
+}
+addEventListener('resize', () => balanceNames());
+
 // 인증샷 응원 반응 (누가 눌렀는지 reacts.{종류}.{id} 에 기록)
 const REACTS = [['fire', '🔥'], ['clap', '👏'], ['heart', '❤️']];
 function reactBar(p, onPhoto) {
@@ -1123,7 +1146,7 @@ function proofFeed() {
     <button data-action="openproof" data-id="${p.id}" class="relative block aspect-square overflow-hidden bg-white/40" aria-label="${esc(who.nick)}님의 인증샷">
       <img src="${p.thumb}" alt="" loading="lazy" class="w-full h-full object-cover">
       <span class="absolute inset-x-0 bottom-0 p-1.5 pt-7 flex items-end justify-between gap-1 bg-gradient-to-t from-black/60 to-transparent text-white">
-        <span class="flex-1 min-w-0 text-left text-[11px] font-semibold leading-tight break-all line-clamp-2 [text-shadow:0_1px_2px_rgba(0,0,0,.6)]">${esc(who.nick)}</span>
+        <span data-nick="${esc(who.nick)}" style="white-space:nowrap;overflow:hidden;min-width:0;flex:1 1 0%" class="text-left text-[11px] font-semibold leading-tight [text-shadow:0_1px_2px_rgba(0,0,0,.6)]">${esc(who.nick)}</span>
         ${reacts ? `<span class="shrink-0 px-1.5 rounded-full bg-black/35 text-[11px] font-semibold">❤️ ${reacts}</span>` : ''}
       </span>
     </button>`;
