@@ -33,7 +33,7 @@ const PALETTE = [
   '#4DB6AC', '#5DA9E9', '#3F7FD6', '#8E7CC3', '#B07CC6', '#E48AB4', '#B56576', '#4A5568',
 ];
 
-// 출석: 1분 이상 공부한 날 / 달성: 그날 할 일을 100% 끝낸 날
+// 출석: 앱에 접속한 날 / 달성: 그날 할 일을 100% 끝내고 인증샷까지 올린 날
 const GRADES = [
   { name: '수련생', att: 0, ach: 0 },
   { name: 'D등급', att: 3, ach: 1 },
@@ -378,6 +378,7 @@ function newData() {
     running: null, // { sid, s }
     proofDays: [], // 인증샷을 올린 날짜들
     passes: [],    // 패스권을 쓴 날짜들 (일주일에 PASS_PER_WEEK번)
+    visits: [],    // 앱에 접속한 날짜들 (출석)
     goalHours: 0,  // 하루 목표 공부 시간 (0이면 설정 안 함)
   };
 }
@@ -441,12 +442,20 @@ function todoStats(key) {
 }
 const isAchieved = (key, todos = D.todos) => { const t = todos[key] || []; return t.length > 0 && t.every((x) => x.done); };
 
-// 등급: 내 것은 지금 켜진 타이머까지, 다른 멤버는 저장된 기록으로 계산
+// 등급
+// 출석: 앱에 접속한 날 (visits). 접속 기록을 남기기 전의 날은 앱에서 뭔가 한 날(할 일 · 인증샷 · 타이머 · 패스)로 센다
+// 달성: 할 일을 모두 끝내고 인증샷까지 올린 날
 function gradeInfo(data = D) {
-  const totals = data === D ? totalsByDay() : (data.sessions || []).reduce((m, x) => { m[x.d] = (m[x.d] || 0) + x.e - x.s; return m; }, {});
-  const todos = data.todos || {};
-  const att = Object.values(totals).filter((v) => v >= 60000).length;
-  const ach = Object.keys(todos).filter((k) => isAchieved(k, todos)).length;
+  const todos = data.todos || {}, proofDays = new Set(data.proofDays || []);
+  const days = new Set([
+    ...(data.visits || []),
+    ...(data.sessions || []).map((x) => x.d),
+    ...Object.keys(todos).filter((k) => (todos[k] || []).length),
+    ...proofDays,
+    ...(data.passes || []),
+  ].filter((k) => k <= today)); // 미리 적어둔 앞날 할 일 · 패스는 빼고
+  const att = days.size;
+  const ach = Object.keys(todos).filter((k) => isAchieved(k, todos) && proofDays.has(k)).length;
   let i = 0;
   GRADES.forEach((g, j) => { if (att >= g.att && ach >= g.ach) i = j; });
   return { att, ach, grade: GRADES[i], next: GRADES[i + 1] || null };
@@ -584,6 +593,14 @@ async function enter(id) {
   render();
   loadEveryone(); // 홈 저금통에 쓸 모두의 벌금
   askRealName();
+  markVisit();
+}
+
+// 출석: 오늘 앱에 접속했다고 기록 (하루에 한 번만 저장)
+function markVisit() {
+  if (!D || (D.visits || []).includes(today)) return;
+  D.visits = [...(D.visits || []), today].sort();
+  save();
 }
 
 // 실명이 아직 없으면 (예전에 가입한 멤버 · 관리자 포함) 한 번 적어달라고 한다
@@ -1116,6 +1133,7 @@ function updateLive() {
     if (ui.statDay === today) ui.statDay = dkey();
     today = dkey();
     watchToday();
+    markVisit(); // 앱을 켜둔 채 날이 바뀌어도 출석
     render();
     return;
   }
@@ -1709,7 +1727,7 @@ function profileView() {
           <span>${x.name}</span><span>${x.att ? `출석 ${x.att}일 · 달성 ${x.ach}일` : '가입하면 시작'}</span>
         </li>`).join('')}
       </ul>
-      <p class="mt-3 text-xs text-gray-500">출석: 1분 이상 공부한 날 · 달성: 할 일을 100% 끝낸 날<br>현재 출석 ${g.att}일 · 달성 ${g.ach}일</p>
+      <p class="mt-3 text-xs text-gray-500">출석: 앱에 접속한 날 · 달성: 할 일을 100% 끝내고 인증샷까지 올린 날<br>현재 출석 ${g.att}일 · 달성 ${g.ach}일</p>
     </section>
     <section class="${CARD}">
       <h3 class="font-semibold">모두의 명언 <span class="text-sm font-normal text-gray-500">${q.length}</span></h3>
