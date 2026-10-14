@@ -1122,9 +1122,9 @@ function proofFeed() {
     return `
     <button data-action="openproof" data-id="${p.id}" class="relative block aspect-square overflow-hidden bg-white/40" aria-label="${esc(who.nick)}님의 인증샷">
       <img src="${p.thumb}" alt="" loading="lazy" class="w-full h-full object-cover">
-      <span class="absolute inset-x-0 bottom-0 p-1.5 pt-6 flex items-end justify-between gap-1 bg-gradient-to-t from-black/50 to-transparent text-white">
-        ${avatar(who, 'w-6 h-6 text-[10px] ring-1 ring-white/80')}
-        ${reacts ? `<span class="px-1.5 rounded-full bg-black/35 text-[11px] font-semibold">❤️ ${reacts}</span>` : ''}
+      <span class="absolute inset-x-0 bottom-0 p-1.5 pt-7 flex items-end justify-between gap-1 bg-gradient-to-t from-black/60 to-transparent text-white">
+        <span class="flex-1 min-w-0 text-left text-[11px] font-semibold leading-tight break-all line-clamp-2 [text-shadow:0_1px_2px_rgba(0,0,0,.6)]">${esc(who.nick)}</span>
+        ${reacts ? `<span class="shrink-0 px-1.5 rounded-full bg-black/35 text-[11px] font-semibold">❤️ ${reacts}</span>` : ''}
       </span>
     </button>`;
   };
