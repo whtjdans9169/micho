@@ -36,11 +36,12 @@ const PALETTE = [
 // 출석: 앱에 접속한 날 / 달성: 그날 할 일을 100% 끝내고 인증샷까지 올린 날
 const GRADES = [
   { name: '수련생', att: 0, ach: 0 },
-  { name: 'AD1', att: 3, ach: 1 },
-  { name: 'AD2', att: 7, ach: 3 },
-  { name: 'AP3', att: 14, ach: 7 },
-  { name: 'AP4', att: 30, ach: 15 },
-  { name: 'AP5', att: 60, ach: 30 },
+  // 시험(약 140일 뒤) 직전에 최고 등급에 닿도록: 출석 120일 · 달성 85일
+  { name: 'AD1', att: 7, ach: 3 },
+  { name: 'AD2', att: 21, ach: 14 },
+  { name: 'AP3', att: 45, ach: 30 },
+  { name: 'AP4', att: 80, ach: 55 },
+  { name: 'AP5', att: 120, ach: 85 },
 ];
 
 const SEED_QUOTES = [
