@@ -756,7 +756,7 @@ function render() {
     hydrateProofs();
     mountSortables();
     balanceNames();
-    setTimeout(balanceNames, 80); // 스타일 · 글꼴이 다 적용된 뒤에 한 번 더 잰다
+    setTimeout(() => { balanceNames(); fitNotice(); }, 80); // 스타일 · 글꼴이 다 적용된 뒤에 한 번 더 잰다
   }
 }
 
@@ -927,18 +927,31 @@ function teamRace() {
     </div>`).join('')}
   </div>`;
 }
+// 공지: 처음엔 7줄만 (전체의 1/3쯤), 누르면 펼치기 · 접기. 수정은 오른쪽 연필 버튼
 function noticeBanner() {
+  if (!notice) {
+    return `
+    <button data-action="notice" class="glass w-full rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex items-center gap-3 text-left">
+      <div class="btn w-10 h-10 shrink-0 rounded-2xl grid place-items-center"><i class="fa-solid fa-bullhorn"></i></div>
+      <p class="flex-1 text-gray-500">공지가 없어요. 눌러서 스터디원들에게 공지를 남겨보세요.</p>
+      <i class="fa-solid fa-pen text-gray-400"></i>
+    </button>`;
+  }
+  const open = ui.noticeOpen;
   return `
-  <button data-action="notice" class="glass w-full rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex items-start gap-3 text-left">
+  <section class="glass rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex items-start gap-3">
     <div class="btn w-10 h-10 shrink-0 rounded-2xl grid place-items-center"><i class="fa-solid fa-bullhorn"></i></div>
-    <div class="flex-1 min-w-0 ${notice ? '' : 'self-center'}">
-      ${notice
-        ? `<p class="font-medium whitespace-pre-line break-words">${esc(notice.text)}</p>
-           <p class="mt-1 text-xs text-gray-500">${esc(notice.by)} · ${fmtWhen(notice.at)}</p>`
-        : '<p class="text-gray-500">공지가 없어요. 눌러서 스터디원들에게 공지를 남겨보세요.</p>'}
-    </div>
-    <i class="fa-solid fa-pen text-gray-400 self-center"></i>
-  </button>`;
+    <button data-action="noticetoggle" class="flex-1 min-w-0 text-left" aria-expanded="${!!open}">
+      <p data-notice-text class="font-medium whitespace-pre-line break-words" ${open ? '' : 'style="display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:7;overflow:hidden"'}>${esc(notice.text)}</p>
+      <p class="mt-1 text-xs text-gray-500">${esc(notice.by)} · ${fmtWhen(notice.at)}<span data-notice-more class="ml-2 font-semibold text-brand">${open ? '접기 ▲' : '전체 보기 ▼'}</span></p>
+    </button>
+    <button data-action="notice" class="w-8 h-8 shrink-0 grid place-items-center text-gray-400" aria-label="공지 수정"><i class="fa-solid fa-pen"></i></button>
+  </section>`;
+}
+// 5줄 안에 다 들어가는 짧은 공지면 '전체 보기'를 숨긴다
+function fitNotice() {
+  const t = $('[data-notice-text]'), more = $('[data-notice-more]');
+  if (t && more && !ui.noticeOpen) more.style.display = t.scrollHeight > t.clientHeight + 2 ? '' : 'none';
 }
 
 function homeView() {
@@ -2321,6 +2334,7 @@ const actions = {
   backdrop: (el, e) => { if (e.target === el && !ui.mustModal) closeModal(); },
 
   notice: () => noticeModal(),
+  noticetoggle: () => { ui.noticeOpen = !ui.noticeOpen; render(); },
   noticedel: async () => {
     if (!confirm('공지를 내릴까요?')) return;
     try { await fb.f.deleteDoc(docRef('board', 'notice')); closeModal(); } catch (e) { toast('공지를 내리지 못했어요 · ' + friendly(e)); }
