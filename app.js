@@ -933,7 +933,7 @@ function noticeBanner() {
     <div class="btn w-10 h-10 shrink-0 rounded-2xl grid place-items-center"><i class="fa-solid fa-bullhorn"></i></div>
     <div class="flex-1 min-w-0 ${notice ? '' : 'self-center'}">
       ${notice
-        ? `<p class="font-medium whitespace-pre-line break-words line-clamp-3">${esc(notice.text)}</p>
+        ? `<p class="font-medium whitespace-pre-line break-words">${esc(notice.text)}</p>
            <p class="mt-1 text-xs text-gray-500">${esc(notice.by)} · ${fmtWhen(notice.at)}</p>`
         : '<p class="text-gray-500">공지가 없어요. 눌러서 스터디원들에게 공지를 남겨보세요.</p>'}
     </div>
