@@ -1170,14 +1170,15 @@ function proofFeed() {
   // 인스타그램처럼 3열 격자. 칸이 작아서 사진 위에는 작은 프로필과 반응 수만, 누르면 크게 보기
   const card = (p) => {
     const who = whoOf(p);
-    const reacts = REACTS.reduce((a, [k]) => a + Object.keys(p.reacts?.[k] || {}).length, 0);
+    // 반응은 종류별로 (🔥 2 👏 1 ❤️ 3), 받은 것만 오른쪽 위에
+    const reacts = REACTS.map(([k, emoji]) => [emoji, Object.keys(p.reacts?.[k] || {}).length]).filter(([, n]) => n);
     return `
     <button data-action="openproof" data-id="${p.id}" class="relative block aspect-square overflow-hidden bg-white/40" aria-label="${esc(who.nick)}님의 인증샷">
       <img src="${p.thumb}" alt="" loading="lazy" class="w-full h-full object-cover">
       <span class="absolute inset-x-0 bottom-0 p-1.5 pt-7 flex items-end justify-between gap-1 bg-gradient-to-t from-black/60 to-transparent text-white">
         <span data-nick="${esc(who.nick)}" style="white-space:nowrap;overflow:hidden;min-width:0;flex:1 1 0%" class="text-left text-[11px] font-semibold leading-tight [text-shadow:0_1px_2px_rgba(0,0,0,.6)]">${esc(who.nick)}</span>
-        ${reacts ? `<span class="shrink-0 px-1.5 rounded-full bg-black/35 text-[11px] font-semibold">❤️ ${reacts}</span>` : ''}
       </span>
+      ${reacts.length ? `<span class="absolute top-1 right-1 flex gap-1.5 px-2 py-1 rounded-full bg-black/45 text-white text-[11px] font-semibold leading-none">${reacts.map(([e, n]) => `<span>${e}${n}</span>`).join('')}</span>` : ''}
     </button>`;
   };
   return `
