@@ -488,13 +488,18 @@ function fineBase(id, from = '', to = today) {
   const joined = p.createdAt ? dayKeyOf(p.createdAt) : settings.fineStart;
   const start = [joined, settings.fineStart, from].sort().pop(); // 셋 중 가장 늦은 날부터
   let missed = 0;
+  const days = []; // 벌금이 붙은 날과 이유
   for (let d = parseKey(start); dkey(d) < to; d = addDays(d, 1)) {
     const key = dkey(d), list = todos[key] || [];
     if (isExempt(id, key)) continue; // 관리자가 정한 면제일
     if ((data.passes || []).includes(key)) continue; // 본인이 쓴 패스권
-    if (!list.length || list.some((t) => !t.done) || !proofDays.has(key)) missed++;
+    const why = [];
+    if (!list.length) why.push('할 일 안 적음');
+    else if (list.some((t) => !t.done)) why.push(`할 일 미완료 ${list.filter((t) => t.done).length}/${list.length}`);
+    if (!proofDays.has(key)) why.push('인증샷 없음');
+    if (why.length) { missed++; days.push({ date: key, why }); }
   }
-  return { missed, base: missed * settings.fine };
+  return { missed, base: missed * settings.fine, days };
 }
 
 // 벌금 면제일: settings.exempt = { 'YYYY-MM-DD': { all: true, uids: { uid: true }, reason } } (관리자가 지정)
@@ -1455,7 +1460,7 @@ function fineCard() {
           ${avatar(r, 'w-9 h-9 text-sm')}
           <span class="flex-1 min-w-0">
             <span class="block font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span>
-            <span class="block text-xs text-gray-500">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''}</span>
+            ${r.missed && (isAdmin() || r.id === me) ? `<button data-action="finedays" data-id="${r.id}" class="block text-xs text-gray-500 underline decoration-dotted underline-offset-2">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''} 보기</button>` : `<span class="block text-xs text-gray-500">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''}</span>`}
           </span>
           <span class="text-right font-bold tabular-nums whitespace-nowrap">${won(r.amount)}</span>
           ${r.id === me
@@ -2011,6 +2016,25 @@ function fineModal() {
     </form>`);
 }
 
+// 벌금이 붙은 날짜와 이유 (관리자는 모두, 멤버는 본인 것만)
+function fineDaysModal(id) {
+  const p = profiles[id] || {}, { days, base } = fineBase(id);
+  const adjust = p.fineAdjust || 0;
+  openModal(`
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-bold">${esc(p.nick || '')} 님의 벌금 날짜</h3>
+      <button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <p class="mt-1 text-sm text-gray-500">${days.length}일 · ${won(base)}${adjust ? ` · 수정값 ${adjust > 0 ? '+' : ''}${won(adjust)} 반영 후 ${won(Math.max(0, base + adjust))}` : ''}</p>
+    <ul class="mt-4 space-y-2">${days.slice().reverse().map((x) => `
+      <li class="flex items-start justify-between gap-3 p-3 rounded-2xl bg-white/60 text-sm">
+        <span class="font-semibold whitespace-nowrap">${fmtDateKo(parseKey(x.date))}</span>
+        <span class="text-right text-gray-600">${x.why.map(esc).join(' · ')}</span>
+      </li>`).join('')}
+    </ul>
+    ${isAdmin() ? '<p class="mt-4 text-xs text-gray-500">잘못 잡힌 날은 벌금 현황의 🏖 면제일에서 이 멤버만 면제할 수 있어요.</p>' : ''}`);
+}
+
 // 관리자: 벌금 면제일 (전체 또는 특정 멤버)
 function exemptModal() {
   const list = exemptList();
@@ -2201,6 +2225,7 @@ const actions = {
   dday: () => { if (isAdmin()) ddayModal(); },
   finesettings: () => { if (isAdmin()) fineModal(); },
   exempt: () => { if (isAdmin()) exemptModal(); },
+  finedays: (el) => { if (isAdmin() || el.dataset.id === me) fineDaysModal(el.dataset.id); },
   exemptdel: async (el) => {
     if (!isAdmin() || !confirm(`${fmtDateKo(parseKey(el.dataset.date))} 면제일을 지울까요?`)) return;
     try {
