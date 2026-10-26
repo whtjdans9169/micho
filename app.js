@@ -980,9 +980,11 @@ function proofButtons(cls, label, albumCls, albumLabel) {
   return `<label class="${cls} cursor-pointer">${proofInput(true)}${label}</label><label class="${albumCls} cursor-pointer">${proofInput(false)}${albumLabel}</label>`;
 }
 
-// 홈 '오늘의 할 일': 누르면 그 자리에서 펼쳐서 체크, 아래에는 바로 인증하기
+// 홈 '오늘의 할 일': 누르면 그 자리에서 펼쳐서 적고 · 체크, 아래에는 바로 인증하기
+// 아직 할 일이 없으면 처음부터 펼쳐 둔다 (바로 적을 수 있게)
+const homeTodoOpen = () => ui.homeTodoOpen ?? !todosOn(today).length;
 function homeTodoCard() {
-  const ts = todoStats(today), list = todosOn(today), open = ui.homeTodoOpen;
+  const ts = todoStats(today), list = todosOn(today), open = homeTodoOpen();
   return `
   <section class="glass rounded-3xl p-5">
     <button data-action="hometodo" class="w-full text-left" aria-expanded="${!!open}">
@@ -999,8 +1001,11 @@ function homeTodoCard() {
         <span class="flex-1 min-w-0 break-all text-sm ${t.done ? 'line-through text-gray-400' : ''}">${esc(t.text)}</span>
       </li>`).join('')}
     </ul>
-    ${list.length ? '' : '<p class="py-3 text-center text-sm text-gray-500">아직 할 일이 없어요</p>'}
-    <button data-action="go" data-view="todo" class="w-full pt-2 text-sm text-gray-600">할 일 쓰기 · 고치기 <i class="fa-solid fa-chevron-right text-xs"></i></button>` : ''}
+    <form data-form="todoadd" data-date="${today}" class="mt-2 flex gap-2">
+      <input name="text" required maxlength="100" autocomplete="off" enterkeyhint="done" placeholder="${list.length ? '할 일 추가' : '오늘 할 일을 적어보세요'}" class="${INPUT} !py-2.5 flex-1 min-w-0 text-sm">
+      <button class="btn px-4 rounded-2xl" aria-label="추가"><i class="fa-solid fa-plus"></i></button>
+    </form>
+    ${list.length ? `<button data-action="go" data-view="todo" class="w-full pt-3 text-sm text-gray-600">고치기 · 순서 바꾸기 · 지우기 <i class="fa-solid fa-chevron-right text-xs"></i></button>` : ''}` : ''}
     ${homeProofRow()}
   </section>`;
 }
@@ -2661,7 +2666,7 @@ const actions = {
     // 마지막 할 일을 끝낸 순간, 아직 인증샷이 없으면 바로 올리게
     if (t.done && k === today && isAchieved(k) && !usedPass(k) && !myProofs.some((p) => p.date === k)) proofPromptModal();
   },
-  hometodo: () => { ui.homeTodoOpen = !ui.homeTodoOpen; render(); },
+  hometodo: () => { ui.homeTodoOpen = !homeTodoOpen(); render(); },
   todoedit: (el) => {
     if (isLocked(ui.todoDate)) return;
     ui.editTodo = el.dataset.id;
@@ -2728,10 +2733,12 @@ const actions = {
 const forms = {
   auth: (f) => onAuth(f),
   withdraw: (f) => withdraw(f),
+  // 할 일 페이지와 홈 카드에서 함께 쓴다 (홈은 data-date 로 오늘)
   todoadd: (f) => {
-    const text = f.elements.text.value.trim();
-    if (!text || isLocked(ui.todoDate)) return;
-    (D.todos[ui.todoDate] ||= []).push({ id: uid(), text, done: false });
+    const k = f.dataset.date || ui.todoDate, text = f.elements.text.value.trim();
+    if (!text || isLocked(k)) return;
+    (D.todos[k] ||= []).push({ id: uid(), text, done: false });
+    if (k === today) ui.homeTodoOpen = true; // 첫 할 일을 적어도 홈 카드가 접히지 않게
     save();
     render();
     $('[data-form="todoadd"] input').focus();
