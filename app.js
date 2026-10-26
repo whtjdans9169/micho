@@ -1290,7 +1290,6 @@ function subjectRow(s) {
 // ---------- 홈 타이머: ① 몇 교시? → ② 제한시간 → ③ 시작 (제한시간이 지나도 시간은 계속 흐른다) ----------
 // D.running = { sid, s, limit(ms, 0이면 없음), base(일시정지 전까지 흐른 시간) }
 // D.paused  = { sid, limit, elapsed } : 일시정지 중인 문제
-const LIMIT_PRESETS = [60, 90, 120, 150, 180]; // 분
 function studyNow() {
   if (D.running) return { sid: D.running.sid, limit: D.running.limit || 0, elapsed: (D.running.base || 0) + Date.now() - D.running.s, on: true };
   if (D.paused) return { ...D.paused, on: false };
@@ -1326,26 +1325,25 @@ function studyHero() {
   if (picked) {
     const min = picked.limit ?? 120; // 그 교시에 지난번에 쓴 제한시간
     return `
-    <button data-action="pickback" class="self-center text-sm text-white/80"><i class="fa-solid fa-chevron-left mr-1"></i>${esc(picked.name)}</button>
-    <div class="mt-2 text-xl font-bold">이 문제를 풀 제한시간을 적어주세요</div>
-    <div class="mt-4 flex flex-wrap justify-center gap-1.5">${LIMIT_PRESETS.map((m) => `
-      <button type="button" data-action="limitpreset" data-m="${m}" class="chip px-3 py-1.5 rounded-full text-sm font-medium">${limitLabel(m)}</button>`).join('')}
+    <div class="inline-flex self-center items-center gap-2 chip px-3.5 py-1 rounded-full text-sm font-semibold">
+      <i class="w-2.5 h-2.5 rounded-full inline-block" style="background:${picked.color}"></i>${esc(picked.name)}
     </div>
-    <form data-form="studystart" class="mt-4 flex flex-col items-center gap-4">
+    <div class="mt-3 text-xl font-bold">이 문제를 풀 제한시간을 적어주세요</div>
+    <form data-form="studystart" class="mt-5 flex flex-col items-center gap-4">
       <div class="flex items-center justify-center gap-2 text-lg font-semibold">
         <input name="h" type="number" inputmode="numeric" min="0" max="12" value="${Math.floor(min / 60)}" class="chip w-16 py-2 rounded-xl text-center text-2xl text-white outline-none" aria-label="시간">시간
         <input name="m" type="number" inputmode="numeric" min="0" max="59" step="5" value="${min % 60}" class="chip w-16 py-2 rounded-xl text-center text-2xl text-white outline-none" aria-label="분">분
       </div>
       <button class="px-10 py-3.5 rounded-full bg-white text-brand-dark text-lg font-bold shadow-lg"><i class="fa-solid fa-play mr-2"></i>시작</button>
-      <p class="-mt-2 text-xs text-white/70">0시간 0분이면 제한시간 없이 시작해요</p>
-    </form>`;
+    </form>
+    <button data-action="pickback" class="chip mt-4 self-center px-4 py-2 rounded-full text-sm font-medium"><i class="fa-solid fa-chevron-left mr-1.5"></i>교시 다시 고르기</button>`;
   }
   // ① 몇 교시?
   return `
     <div class="text-2xl md:text-3xl font-bold leading-snug">반가워요!<br>오늘은 몇 교시 공부할 건가요?</div>
-    <div class="mt-6 flex flex-wrap justify-center gap-2">${D.subjects.map((s) => `
-      <button data-action="picksub" data-id="${s.id}" class="chip px-5 py-3 rounded-2xl text-lg font-semibold inline-flex items-center gap-2">
-        <i class="w-3 h-3 rounded-full inline-block" style="background:${s.color}"></i>${esc(s.name)}
+    <div class="mt-6 flex justify-center gap-2">${D.subjects.map((s) => `
+      <button data-action="picksub" data-id="${s.id}" class="chip flex-1 min-w-0 max-w-[8rem] px-2 py-2.5 rounded-2xl text-base font-semibold inline-flex items-center justify-center gap-1.5">
+        <i class="w-2.5 h-2.5 shrink-0 rounded-full inline-block" style="background:${s.color}"></i><span class="truncate">${esc(s.name)}</span>
       </button>`).join('') || '<button data-action="subjects" class="chip px-5 py-3 rounded-2xl font-semibold">과목 추가하기</button>'}
     </div>`;
 }
@@ -2808,11 +2806,6 @@ const actions = {
   },
   picksub: (el) => { ui.pickSub = el.dataset.id; render(); },
   pickback: () => { ui.pickSub = null; render(); },
-  limitpreset: (el) => {
-    const f = $('[data-form="studystart"]'), m = Number(el.dataset.m);
-    f.elements.h.value = Math.floor(m / 60);
-    f.elements.m.value = m % 60;
-  },
   studypause: () => pauseStudy(),
   studyresume: () => resumeStudy(),
   studyend: () => endStudy(),
