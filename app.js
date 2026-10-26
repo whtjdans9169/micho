@@ -63,6 +63,7 @@ const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일']
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
 const DAY = 86400000;
 const AUTO_STOP = 10 * 3600000; // 타이머를 켜놓고 잊었을 때 자동으로 멈추는 시간
+const CHECK_AFTER = 3 * 3600000; // 타이머가 이만큼 켜져 있으면 "아직 공부 중이세요?" 하고 묻는다
 // 자료: Firebase Storage는 유료라서 파일을 900KB 조각으로 나눠 Firestore에 저장한다
 const CHUNK = 900 * 1024;
 const MAX_FILE = 10 * 1024 * 1024;
@@ -103,6 +104,12 @@ function fmtClock(ts) {
 }
 const fmtDate = (d) => `${d.getMonth() + 1}. ${d.getDate()} (${WD[d.getDay()]})`;
 const fmtDateKo = (d) => `${d.getMonth() + 1}월 ${d.getDate()}일 (${WD[d.getDay()]})`;
+// 시각 입력칸(HH:MM)용
+const hhmm = (ts) => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+// 'HH:MM' → 그 날짜(base)의 그 시각
+const atTime = (base, t) => { const [h, m] = t.split(':').map(Number), d = new Date(base); d.setHours(h, m, 0, 0); return d.getTime(); };
+// 'HH:MM' → 지금보다 늦지 않은 가장 가까운 그 시각 (오늘, 아니면 어제)
+const lastTimeAt = (t) => { const ts = atTime(Date.now(), t); return ts > Date.now() ? ts - DAY : ts; };
 
 async function sha256(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -229,7 +236,8 @@ async function saveProof(file) {
   const thumb = (await shrinkImage(file, 300, 1)).toDataURL('image/jpeg', QUALITY); // 1:1 정사각형 (목록용)
   const id = `${me}_${today}`;
   await fb.f.setDoc(docRef('proofPhotos', id), { photo });
-  await fb.f.setDoc(docRef('proofs', id), { uid: me, nick: myProfile().nick, date: today, at: Date.now(), thumb });
+  // merge: 다시 찍어도 그동안 받은 응원(reacts)은 남긴다
+  await fb.f.setDoc(docRef('proofs', id), { uid: me, nick: myProfile().nick, date: today, at: Date.now(), thumb }, { merge: true });
   photoCache[id] = Promise.resolve(photo);
   markProofDay(today, true);
 }
@@ -257,6 +265,7 @@ function markProofDay(date, on) {
   D.proofDays = [...days].sort();
   save();
 }
+const findProof = (id) => [...proofs, ...myProofs, ...todayProofs].find((p) => p.id === id);
 function proofPhoto(id) {
   return (photoCache[id] ||= fb.f.getDoc(docRef('proofPhotos', id)).then((s) => s.data()?.photo || ''));
 }
@@ -762,6 +771,7 @@ function render() {
     updateLive();
     hydrateProofs();
     mountSortables();
+    observeFeedEnd();
     balanceNames();
     setTimeout(() => { balanceNames(); fitNotice(); }, 80); // 스타일 · 글꼴이 다 적용된 뒤에 한 번 더 잰다
   }
@@ -907,7 +917,7 @@ function piggyBank() {
         : '아직 저금통이 비어 있어요. 모두 열심히 하고 있다는 뜻! 💪'}</p>`;
   })();
   return `
-  <section class="glass rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex gap-3">
+  <section class="glass rounded-3xl p-4 md:p-5 flex gap-3">
     <div class="w-10 h-10 shrink-0 rounded-2xl bg-pink-100 grid place-items-center text-xl">🐷</div>
     <div class="flex-1 min-w-0">
       <h2 class="text-sm font-semibold text-gray-600 flex items-center gap-2 flex-wrap"><span>${!isAdmin() && myTeam() ? `${teamLabel(myTeam())} ` : ''}저금통 <span class="font-normal text-gray-500">· 모인 벌금</span></span> ${isAdmin() ? teamPicker() : ''}</h2>
@@ -934,7 +944,7 @@ function teamRace() {
     </div>`).join('')}
   </div>`;
 }
-// 공지: 처음엔 7줄만 (전체의 1/3쯤), 누르면 펼치기 · 접기. 수정은 오른쪽 연필 버튼
+// 공지: 처음엔 3줄만 (타이머가 위쪽에 보이도록), 누르면 펼치기 · 접기. 수정은 오른쪽 연필 버튼
 function noticeBanner() {
   if (!notice) {
     return `
@@ -949,24 +959,72 @@ function noticeBanner() {
   <section class="glass rounded-3xl p-4 md:p-5 mb-4 lg:mb-6 flex items-start gap-3">
     <div class="btn w-10 h-10 shrink-0 rounded-2xl grid place-items-center"><i class="fa-solid fa-bullhorn"></i></div>
     <button data-action="noticetoggle" class="flex-1 min-w-0 text-left" aria-expanded="${!!open}">
-      <p data-notice-text class="font-medium whitespace-pre-line break-words" ${open ? '' : 'style="display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:7;overflow:hidden"'}>${esc(notice.text)}</p>
+      <p data-notice-text class="font-medium whitespace-pre-line break-words" ${open ? '' : 'style="display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden"'}>${esc(notice.text)}</p>
       <p class="mt-1 text-xs text-gray-500">${esc(notice.by)} · ${fmtWhen(notice.at)}<span data-notice-more class="ml-2 font-semibold text-brand">${open ? '접기 ▲' : '전체 보기 ▼'}</span></p>
     </button>
     <button data-action="notice" class="w-8 h-8 shrink-0 grid place-items-center text-gray-400" aria-label="공지 수정"><i class="fa-solid fa-pen"></i></button>
   </section>`;
 }
-// 5줄 안에 다 들어가는 짧은 공지면 '전체 보기'를 숨긴다
+// 3줄 안에 다 들어가는 짧은 공지면 '전체 보기'를 숨긴다
 function fitNotice() {
   const t = $('[data-notice-text]'), more = $('[data-notice-more]');
   if (t && more && !ui.noticeOpen) more.style.display = t.scrollHeight > t.clientHeight + 2 ? '' : 'none';
 }
 
+// 인증샷 고르기 버튼. albumCls 를 주면 [카메라로 바로 찍기 · 앨범] 두 개, 안 주면 하나 (휴대폰이 찍기 · 앨범을 고르게 해준다)
+// 올리는 중에는 버튼 대신 '올리는 중…'
+const proofInput = (camera) => `<input type="file" accept="image/*" ${camera ? 'capture="environment"' : ''} data-input="proof" class="hidden">`;
+function proofButtons(cls, label, albumCls, albumLabel) {
+  if (ui.proofUploading) return `<span class="${cls} opacity-70 cursor-wait"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>올리는 중…</span>`;
+  if (!albumCls) return `<label class="${cls} cursor-pointer">${proofInput(false)}${label}</label>`;
+  return `<label class="${cls} cursor-pointer">${proofInput(true)}${label}</label><label class="${albumCls} cursor-pointer">${proofInput(false)}${albumLabel}</label>`;
+}
+
+// 홈 '오늘의 할 일': 누르면 그 자리에서 펼쳐서 체크, 아래에는 바로 인증하기
+function homeTodoCard() {
+  const ts = todoStats(today), list = todosOn(today), open = ui.homeTodoOpen;
+  return `
+  <section class="glass rounded-3xl p-5">
+    <button data-action="hometodo" class="w-full text-left" aria-expanded="${!!open}">
+      <div class="flex justify-between text-sm">
+        <span class="font-semibold">오늘의 할 일 <i class="fa-solid fa-chevron-${open ? 'up' : 'down'} ml-1 text-xs text-gray-400"></i></span>
+        <span class="text-gray-500">${ts.done}/${ts.total} · <b class="text-brand">${ts.pct}%</b></span>
+      </div>
+      <div class="mt-3 h-2.5 rounded-full bg-white/70 overflow-hidden"><div class="btn h-full rounded-full transition-all" style="width:${ts.pct}%"></div></div>
+    </button>
+    ${open ? `
+    <ul class="mt-2 divide-y divide-white/70">${list.map((t) => `
+      <li class="flex items-center gap-3 py-2.5">
+        <button data-action="todotoggle" data-id="${t.id}" data-date="${today}" class="w-6 h-6 shrink-0 rounded-lg border-2 grid place-items-center ${t.done ? 'btn border-transparent' : 'border-gray-300 bg-white/60'}" aria-label="완료 체크">${t.done ? '<i class="fa-solid fa-check text-xs"></i>' : ''}</button>
+        <span class="flex-1 min-w-0 break-all text-sm ${t.done ? 'line-through text-gray-400' : ''}">${esc(t.text)}</span>
+      </li>`).join('')}
+    </ul>
+    ${list.length ? '' : '<p class="py-3 text-center text-sm text-gray-500">아직 할 일이 없어요</p>'}
+    <button data-action="go" data-view="todo" class="w-full pt-2 text-sm text-gray-600">할 일 쓰기 · 고치기 <i class="fa-solid fa-chevron-right text-xs"></i></button>` : ''}
+    ${homeProofRow()}
+  </section>`;
+}
+function homeProofRow() {
+  const line = 'mt-3 pt-3 border-t border-white/80';
+  const tk = ticketOn(today);
+  if (tk) return `<p class="${line} text-sm text-gray-600">${tk.emoji} 오늘은 ${tk.short}! 인증샷이 없어도 괜찮아요</p>`;
+  const mine = myProofs.find((p) => p.date === today);
+  if (mine) {
+    return `
+    <button data-action="openproof" data-id="${mine.id}" data-list="mine" class="${line} w-full flex items-center gap-3 text-left">
+      <img src="${mine.thumb}" alt="" class="w-10 h-10 rounded-xl object-cover">
+      <span class="flex-1 text-sm font-semibold text-brand"><i class="fa-solid fa-circle-check mr-1"></i>오늘 인증 완료 <span class="font-normal text-gray-500">${fmtClock(mine.at)}</span></span>
+    </button>`;
+  }
+  const cls = 'flex-1 py-2.5 rounded-2xl text-sm font-semibold text-center';
+  return `<div class="${line} flex gap-2">${proofButtons(`btn ${cls}`, '<i class="fa-solid fa-camera mr-1.5"></i>오늘 인증하기', `bg-white/80 ${cls}`, '<i class="fa-regular fa-image mr-1.5"></i>앨범')}</div>`;
+}
+
 function homeView() {
-  const ts = todoStats(today), q = ui.quote;
+  const q = ui.quote;
   return `
   ${eveningReminder()}
   ${noticeBanner()}
-  ${piggyBank()}
   <div class="grid grid-cols-1 gap-4 lg:gap-6 lg:grid-cols-5">
     <section class="glass-hero rounded-[2rem] p-6 md:p-8 lg:col-span-3 flex flex-col lg:min-h-[440px]">
       <div class="flex items-center justify-between">
@@ -992,13 +1050,7 @@ function homeView() {
       ${q ? `<button data-action="quote" class="chip rounded-2xl px-4 py-3 text-sm leading-relaxed">“${esc(q.text)}”${q.by ? `<span class="text-white/70"> · ${esc(q.by)}</span>` : ''}</button>` : ''}
     </section>
     <div class="lg:col-span-2 space-y-4">
-      <button data-action="go" data-view="todo" class="glass w-full rounded-3xl p-5 text-left">
-        <div class="flex justify-between text-sm">
-          <span class="font-semibold">오늘의 할 일</span>
-          <span class="text-gray-500">${ts.done}/${ts.total} · <b class="text-brand">${ts.pct}%</b></span>
-        </div>
-        <div class="mt-3 h-2.5 rounded-full bg-white/70 overflow-hidden"><div class="btn h-full rounded-full transition-all" style="width:${ts.pct}%"></div></div>
-      </button>
+      ${homeTodoCard()}
       <section class="glass rounded-3xl p-2">
         <ul>${D.subjects.map(subjectRow).join('')}</ul>
         ${D.subjects.length ? '' : '<p class="py-8 text-center text-gray-500">과목을 추가해주세요</p>'}
@@ -1006,6 +1058,7 @@ function homeView() {
       </section>
     </div>
   </div>
+  <div class="mt-4 lg:mt-6">${piggyBank()}</div>
   ${todayStatus()}
   ${weeklyReport()}
   ${proofFeed()}`;
@@ -1023,15 +1076,19 @@ function eveningReminder() {
   const h = new Date().getHours();
   const missing = missingToday();
   if (!(h >= 21 || h < DAY_START_H) || !missing.length || today < settings.fineStart) return '';
+  const needProof = missing.includes('인증샷');
   return `
-  <button data-action="go" data-view="todo" class="w-full mb-4 lg:mb-6 p-4 rounded-3xl text-left flex items-center gap-3 bg-amber-100/90 text-amber-900 shadow-sm">
-    <span class="text-2xl">⏰</span>
-    <span class="flex-1 min-w-0">
-      <span class="block font-bold">오늘이 ${h < DAY_START_H ? '곧' : `${24 - h + DAY_START_H}시간 안에`} 끝나요!</span>
-      <span class="block text-sm">아직 ${missing.join(' · ')}이 남았어요 · 새벽 ${DAY_START_H}시가 지나면 벌금 ${won(settings.fine)}</span>
-    </span>
-    <i class="fa-solid fa-chevron-right"></i>
-  </button>`;
+  <div class="mb-4 lg:mb-6 p-4 rounded-3xl flex items-center gap-3 bg-amber-100/90 text-amber-900 shadow-sm">
+    <button data-action="go" data-view="todo" class="flex-1 min-w-0 flex items-center gap-3 text-left">
+      <span class="text-2xl">⏰</span>
+      <span class="flex-1 min-w-0">
+        <span class="block font-bold">오늘이 ${h < DAY_START_H ? '곧' : `${24 - h + DAY_START_H}시간 안에`} 끝나요!</span>
+        <span class="block text-sm">아직 ${missing.join(' · ')}이 남았어요 · 새벽 ${DAY_START_H}시가 지나면 벌금 ${won(settings.fine)}</span>
+      </span>
+      ${needProof ? '' : '<i class="fa-solid fa-chevron-right"></i>'}
+    </button>
+    ${needProof ? proofButtons('shrink-0 px-3.5 py-2 rounded-full bg-white/80 text-sm font-semibold whitespace-nowrap', '<i class="fa-solid fa-camera mr-1"></i>인증') : ''}
+  </div>`;
 }
 
 // 팀 주간 리포트: 지난주(월~일) 우리 팀의 인증률과 최다 인증 멤버. 개인 공부 시간은 보여주지 않는다
@@ -1083,14 +1140,16 @@ function todayStatus() {
     <div class="mt-3 flex flex-wrap gap-x-3 gap-y-3 pb-1">${members.map(([id, p]) => {
       const ok = done.has(id);
       const pass = !ok && ticketOn(today, id === me ? D : allData?.[id]); // 오늘 패스권 · 학원권을 쓴 멤버
+      // 인증한 멤버의 사진을 누르면 오늘 인증샷 보기 (인증샷은 같은 팀 것만)
+      const proof = ok && inMyScope(id) && todayProofs.find((x) => x.uid === id);
       // 닉네임은 줄이지 않고 전부 보여준다 (칸 너비가 닉네임에 맞춰 늘어나고, 넘치면 다음 줄로)
       return `
       <div class="min-w-[3.5rem] flex flex-col items-center">
-        <div class="relative">
+        <${proof ? `button data-action="openproof" data-id="${proof.id}" data-list="today" aria-label="${esc(p.nick || '')}님의 오늘 인증샷"` : 'div'} class="relative">
           ${avatar(p, `w-12 h-12 text-sm ${ok ? 'ring-2 ring-brand ring-offset-2 ring-offset-transparent' : pass ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-transparent' : 'opacity-40 grayscale'}`)}
           ${ok ? '<span class="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full btn grid place-items-center text-[10px]"><i class="fa-solid fa-check"></i></span>' : ''}
           ${pass ? `<span class="absolute -bottom-1 -right-1 text-base" title="오늘 ${pass.name}">${pass.emoji}</span>` : ''}
-        </div>
+        </${proof ? 'button' : 'div'}>
         <span class="mt-1.5 text-center text-[11px] whitespace-nowrap ${ok ? 'font-semibold' : 'text-gray-500'}">${esc(p.nick || '')}</span>
         ${teamOf(id) ? `<span class="mt-0.5">${teamBadge(id)}</span>` : ''}
       </div>`;
@@ -1180,7 +1239,7 @@ function proofFeed() {
     // 반응은 종류별로 (🔥 2 👏 1 ❤️ 3), 받은 것만 오른쪽 위에
     const reacts = REACTS.map(([k, emoji]) => [emoji, Object.keys(p.reacts?.[k] || {}).length]).filter(([, n]) => n);
     return `
-    <button data-action="openproof" data-id="${p.id}" class="relative block aspect-square overflow-hidden bg-white/40" aria-label="${esc(who.nick)}님의 인증샷">
+    <button data-action="openproof" data-id="${p.id}" data-list="feed" data-dbl class="relative block aspect-square overflow-hidden bg-white/40" aria-label="${esc(who.nick)}님의 인증샷">
       <img src="${p.thumb}" alt="" loading="lazy" class="w-full h-full object-cover">
       <span class="absolute inset-x-0 bottom-0 p-1.5 pt-7 flex items-end justify-between gap-1 bg-gradient-to-t from-black/60 to-transparent text-white">
         <span data-nick="${esc(who.nick)}" style="white-space:nowrap;overflow:hidden;min-width:0;flex:1 1 0%" class="text-left text-[11px] font-semibold leading-tight [text-shadow:0_1px_2px_rgba(0,0,0,.6)]">${esc(who.nick)}</span>
@@ -1196,9 +1255,25 @@ function proofFeed() {
     </div>
     ${shown.length
       ? `<div class="grid grid-cols-3 gap-0.5 md:gap-1.5 rounded-2xl overflow-hidden">${shown.map(card).join('')}</div>
-         ${proofs.length >= ui.feedLimit ? '<button data-action="feedmore" class="glass mt-4 w-full py-3 rounded-2xl text-gray-600">더 보기</button>' : ''}`
+         <p class="mt-2 text-center text-xs text-gray-500">사진을 두 번 톡 누르면 ❤️</p>
+         ${proofs.length >= ui.feedLimit ? '<div data-feedend class="py-4 text-center text-sm text-gray-500"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>더 불러오는 중…</div>' : ''}`
       : '<div class="glass rounded-3xl p-8 text-center text-gray-500">아직 인증샷이 없어요. 할 일을 끝내고 첫 인증샷을 올려보세요!</div>'}
   </section>`;
+}
+
+// 인증샷 목록 끝까지 내리면 자동으로 다음 묶음을 불러온다
+let feedObserver = null;
+function observeFeedEnd() {
+  feedObserver?.disconnect();
+  const end = $('[data-feedend]');
+  if (!end || !window.IntersectionObserver) return;
+  feedObserver = new IntersectionObserver(([e]) => {
+    if (!e.isIntersecting) return;
+    feedObserver.disconnect();
+    ui.feedLimit += FEED_PAGE;
+    watchFeed();
+  }, { rootMargin: '400px' });
+  feedObserver.observe(end);
 }
 
 function subjectRow(s) {
@@ -1242,6 +1317,8 @@ function updateLive() {
     toast(`${AUTO_STOP / 3600000}시간 넘게 켜져 있어서 타이머를 자동으로 멈췄어요`);
     return;
   }
+  // 오래 켜져 있으면 끄는 걸 잊은 건 아닌지 묻는다 (물은 뒤 다시 CHECK_AFTER 가 지나면 또)
+  if (D.running && !$('#modal').innerHTML && Date.now() - (D.running.asked || D.running.s) > CHECK_AFTER) stillStudyingModal();
   const list = sessionsOn(today);
   const goal = (D.goalHours || 0) * 3600000, pct = goal ? Math.min(1, sumMs(list) / goal) : 0;
   document.querySelectorAll('[data-live]').forEach((el) => {
@@ -1335,20 +1412,23 @@ function todoView() {
           <button class="btn px-5 rounded-2xl" aria-label="추가"><i class="fa-solid fa-plus"></i></button>
         </form>`}
     <section class="glass rounded-3xl mt-4 px-4 ${list.length ? '' : 'hidden'}">
-      <ul class="divide-y divide-white/70">${list.map((t) => `
-        <li class="flex items-center gap-3 py-4">
+      <ul ${locked ? '' : 'data-sortable="todo"'} class="sortable divide-y divide-white/70">${list.map((t) => `
+        <li data-id="${t.id}" class="flex items-center gap-3 py-4">
           <button data-action="todotoggle" data-id="${t.id}" ${locked ? 'disabled' : ''} class="w-6 h-6 shrink-0 rounded-lg border-2 grid place-items-center ${t.done ? 'btn border-transparent' : 'border-gray-300 bg-white/60'}" aria-label="완료 체크">${t.done ? '<i class="fa-solid fa-check text-xs"></i>' : ''}</button>
-          <span class="flex-1 break-all ${t.done ? 'line-through text-gray-400' : ''}">${esc(t.text)}</span>
-          ${locked ? '' : `<button data-action="tododel" data-id="${t.id}" class="w-7 text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>`}
+          ${ui.editTodo === t.id && !locked
+            ? `<form data-form="todoedit" data-id="${t.id}" class="flex-1 min-w-0"><input name="text" value="${esc(t.text)}" required maxlength="100" autocomplete="off" enterkeyhint="done" class="${INPUT} !py-2"></form>`
+            : `<${locked ? 'span' : `button data-action="todoedit" data-id="${t.id}"`} class="flex-1 min-w-0 text-left break-all ${t.done ? 'line-through text-gray-400' : ''}">${esc(t.text)}</${locked ? 'span' : 'button'}>`}
+          ${locked ? '' : `<button data-action="tododel" data-id="${t.id}" class="w-7 text-gray-400 hover:text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>
+          <i class="todo-grip fa-solid fa-grip-lines w-6 text-center text-gray-400 cursor-grab" aria-label="끌어서 순서 바꾸기"></i>`}
         </li>`).join('')}
       </ul>
     </section>
-    ${list.length ? '' : '<p class="py-12 text-center text-gray-500">아직 할 일이 없어요</p>'}
+    ${list.length ? (locked ? '' : '<p class="mt-2 text-center text-xs text-gray-500">글자를 누르면 고치고, ≡ 를 끌면 순서가 바뀌어요</p>') : '<p class="py-12 text-center text-gray-500">아직 할 일이 없어요</p>'}
     ${myProofs.length ? `
     <section class="mt-8">
       <h3 class="mb-3 text-lg font-bold">나의 인증샷 <span class="text-sm font-normal text-gray-500">${myProofs.length}</span></h3>
       <div class="grid grid-cols-3 gap-2">${myProofs.map((p) => `
-        <button data-action="openproof" data-id="${p.id}" class="relative rounded-xl overflow-hidden">
+        <button data-action="openproof" data-id="${p.id}" data-list="mine" class="relative rounded-xl overflow-hidden">
           <img src="${p.thumb}" alt="" loading="lazy" class="w-full aspect-square object-cover">
           <span class="absolute left-1.5 bottom-1.5 px-1.5 rounded-md bg-black/45 text-white text-[11px]">${parseKey(p.date).getMonth() + 1}/${parseKey(p.date).getDate()}</span>
         </button>`).join('')}
@@ -1360,24 +1440,18 @@ function todoView() {
 // 가운데 카메라 배너: 오늘은 찍고, 지난 날은 그날 올린 인증샷을 보여준다
 function proofBanner(key) {
   const mine = myProofs.find((p) => p.date === key);
-  // 카메라로 바로 찍기(capture) 또는 사진 보관함에서 고르기
-  const pick = (camera, cls, label) => `
-    <label class="${cls} cursor-pointer">
-      <input type="file" accept="image/*" ${camera ? 'capture="environment"' : ''} data-input="proof" class="hidden">${label}
-    </label>`;
   if (mine) {
     const small = 'px-3.5 py-2 rounded-full bg-white/80 text-sm font-semibold text-center whitespace-nowrap';
     return `
     <div class="glass mt-4 rounded-3xl p-3 flex items-center gap-4">
-      <button data-action="openproof" data-id="${mine.id}" class="shrink-0"><img src="${mine.thumb}" alt="" class="w-20 aspect-square rounded-2xl object-cover"></button>
+      <button data-action="openproof" data-id="${mine.id}" data-list="mine" class="shrink-0"><img src="${mine.thumb}" alt="" class="w-20 aspect-square rounded-2xl object-cover"></button>
       <div class="flex-1 min-w-0">
         <div class="font-bold text-brand"><i class="fa-solid fa-circle-check mr-1"></i>인증 완료</div>
         <div class="mt-0.5 text-sm text-gray-500 whitespace-nowrap">${fmtClock(mine.at)}</div>
       </div>
       ${key === today ? `
       <div class="flex flex-col gap-1.5">
-        ${pick(true, small, '<i class="fa-solid fa-camera mr-1"></i>다시 찍기')}
-        ${pick(false, small, '<i class="fa-regular fa-image mr-1"></i>앨범')}
+        ${proofButtons(small, '<i class="fa-solid fa-camera mr-1"></i>다시 찍기', small, '<i class="fa-regular fa-image mr-1"></i>앨범')}
       </div>` : ''}
     </div>`;
   }
@@ -1391,8 +1465,7 @@ function proofBanner(key) {
       <span class="block mt-0.5 text-sm text-gray-500">할 일을 다 끝냈다면 사진으로 인증해요</span>
     </span>
     <div class="mt-1 w-full flex gap-2">
-      ${pick(true, `btn ${big}`, '<i class="fa-solid fa-camera mr-1.5"></i>사진 찍기')}
-      ${pick(false, `bg-white/80 ${big}`, '<i class="fa-regular fa-image mr-1.5"></i>앨범에서 고르기')}
+      ${proofButtons(`btn ${big}`, '<i class="fa-solid fa-camera mr-1.5"></i>사진 찍기', `bg-white/80 ${big}`, '<i class="fa-regular fa-image mr-1.5"></i>앨범에서 고르기')}
     </div>
   </div>`;
 }
@@ -1545,7 +1618,34 @@ function dayStats() {
       <span class="font-semibold">${ts.done}/${ts.total} · ${ts.pct}%</span>
     </div>
   </section>
-  ${subjectBreakdown(list)}`;
+  ${subjectBreakdown(list)}
+  ${sessionList(k)}`;
+}
+
+// 그날의 공부 기록 하나하나 (누르면 시간 고치기 · 삭제)
+function sessionList(k) {
+  const list = D.sessions.filter((x) => x.d === k).sort((a, b) => a.s - b.s);
+  const live = D.running && sessionsOn(k).find((x) => x.s >= D.running.s);
+  if (!list.length && !live) return '';
+  const row = (x, running) => {
+    const s = findSubject(x.sid) || { name: '삭제된 과목', color: '#CBD5E1' };
+    return `
+      <li>
+        <${running ? 'div' : `button data-action="session" data-s="${x.s}" data-sid="${x.sid}"`} class="w-full flex items-center gap-3 p-2.5 rounded-2xl bg-white/50 text-left text-sm">
+          <i class="w-2.5 h-2.5 rounded-full inline-block shrink-0" style="background:${s.color}"></i>
+          <span class="flex-1 min-w-0 truncate font-medium">${esc(s.name)}</span>
+          <span class="tabular-nums text-gray-600 whitespace-nowrap">${fmtClock(x.s)} – ${running ? '진행 중' : fmtClock(x.e)}</span>
+          <span class="w-12 text-right tabular-nums font-semibold">${fmtHM(x.e - x.s)}</span>
+          ${running ? '<span class="w-4"></span>' : '<i class="fa-solid fa-pen w-4 text-xs text-gray-400"></i>'}
+        </${running ? 'div' : 'button'}>
+      </li>`;
+  };
+  return `
+  <section class="${CARD}">
+    <h3 class="font-semibold">공부 기록</h3>
+    <p class="mt-1 text-xs text-gray-500">타이머 끄는 걸 잊었다면 눌러서 시간을 고치거나 지울 수 있어요</p>
+    <ul class="mt-3 space-y-2">${list.map((x) => row(x, false)).join('')}${live ? row(live, true) : ''}</ul>
+  </section>`;
 }
 
 function weekStats(totals) {
@@ -1708,20 +1808,38 @@ function refreshDdays() {
   else render();
 }
 // 화면에 있는 D-Day 목록에 '꾹 눌러서 옮기기'를 붙인다 (휴대폰은 꾹 누르기, PC는 바로 끌기)
+// 할 일 목록은 오른쪽 ≡ 손잡이를 끌어서 옮긴다
 function mountSortables() {
   if (!window.Sortable) return;
+  const base = {
+    animation: 180,
+    touchStartThreshold: 6,
+    forceFallback: true, // 브라우저 기본 끌어놓기 대신 모든 기기에서 같은 방식으로 끌기
+    fallbackClass: 'sort-chosen',
+    chosenClass: 'sort-chosen',
+    ghostClass: 'sort-ghost',
+  };
+  document.querySelectorAll('[data-sortable="todo"]').forEach((ul) => {
+    Sortable.create(ul, {
+      ...base,
+      handle: '.todo-grip',
+      onEnd: (e) => {
+        if (e.oldIndex === e.newIndex || isLocked(ui.todoDate)) return;
+        const byId = Object.fromEntries(todosOn(ui.todoDate).map((x) => [x.id, x]));
+        D.todos[ui.todoDate] = [...ul.children].map((li) => byId[li.dataset.id]).filter(Boolean);
+        save();
+        if (navigator.vibrate) navigator.vibrate(10);
+        render();
+      },
+    });
+  });
   document.querySelectorAll('[data-sortable="dday"]').forEach((ul) => {
     Sortable.create(ul, {
-      animation: 180,
+      ...base,
       delay: 300,
       delayOnTouchOnly: true,
-      touchStartThreshold: 6,
-      forceFallback: true, // 브라우저 기본 끌어놓기 대신 모든 기기에서 같은 방식으로 끌기
-      fallbackClass: 'sort-chosen',
       filter: 'button',
       preventOnFilter: false,
-      chosenClass: 'sort-chosen',
-      ghostClass: 'sort-ghost',
       onEnd: (e) => {
         if (e.oldIndex === e.newIndex) return;
         const byId = Object.fromEntries(ddayList().map((x) => [x.id, x]));
@@ -2092,8 +2210,28 @@ function myFineModal() {
     </form>`);
 }
 
+// 크게 보기에서 좌우로 넘길 목록: 홈 인증샷 · 내 인증샷 · 오늘의 인증 (같은 팀 것만)
+function proofListOf(name) {
+  if (name === 'feed') return proofs.filter((p) => inMyScope(p.uid));
+  if (name === 'mine') return myProofs;
+  if (name === 'today') return todayProofs.filter((p) => inMyScope(p.uid)).sort((a, b) => b.at - a.at);
+  return [];
+}
+function proofNav(d) {
+  const list = proofListOf(ui.proofList), i = list.findIndex((p) => p.id === ui.openProof);
+  if (i >= 0 && list[i + d]) proofModal(list[i + d]);
+}
+function openProof(id, list) {
+  const p = findProof(id);
+  if (!p) return;
+  ui.proofList = list || '';
+  proofModal(p);
+}
+
 function proofModal(p) {
   const who = whoOf(p);
+  const list = proofListOf(ui.proofList), i = list.findIndex((x) => x.id === p.id);
+  const arrow = (d, icon, label) => `<button data-action="proofnav" data-d="${d}" class="absolute top-1/2 -translate-y-1/2 ${d < 0 ? 'left-2' : 'right-2'} w-9 h-9 rounded-full bg-black/35 text-white grid place-items-center" aria-label="${label}"><i class="fa-solid ${icon}"></i></button>`;
   openModal(`
     <div class="flex items-center gap-3">
       ${avatar(who, 'w-10 h-10 text-sm')}
@@ -2103,14 +2241,66 @@ function proofModal(p) {
       </div>
       <button data-action="closemodal" class="w-8 h-8 shrink-0 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
     </div>
-    <button data-action="prooftoggle" class="mt-4 block w-full rounded-2xl overflow-hidden bg-white/40" aria-label="원본 비율로 보기">
-      <img data-proof="${p.id}" src="${p.thumb}" alt="" class="w-full aspect-square object-cover">
-    </button>
-    <p data-proofhint class="mt-1.5 text-center text-xs text-gray-500">사진을 누르면 원본 비율로 볼 수 있어요</p>
+    <div data-swipe class="relative mt-4">
+      <button data-action="prooftoggle" class="block w-full rounded-2xl overflow-hidden bg-white/40" aria-label="원본 비율로 보기">
+        <img data-proof="${p.id}" src="${p.thumb}" alt="" class="w-full aspect-square object-cover">
+      </button>
+      ${i > 0 ? arrow(-1, 'fa-chevron-left', '이전 인증샷') : ''}
+      ${i >= 0 && i < list.length - 1 ? arrow(1, 'fa-chevron-right', '다음 인증샷') : ''}
+    </div>
+    <p data-proofhint class="mt-1.5 text-center text-xs text-gray-500">사진을 누르면 원본 비율로 볼 수 있어요${list.length > 1 ? ' · 옆으로 밀면 다음 사진' : ''}</p>
     <div class="mt-2 flex gap-1.5">${reactBar(p, false)}</div>
     ${p.uid === me || isAdmin() ? `<button data-action="proofdel" data-id="${p.id}" class="mt-4 w-full py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1.5"></i>인증샷 삭제${p.uid === me ? '' : ' (관리자)'}</button>` : ''}`);
   ui.openProof = p.id;
   hydrateProofs();
+}
+
+function stillStudyingModal() {
+  const s = findSubject(D.running.sid);
+  D.running.asked = Date.now(); // 창을 그냥 닫아도 '계속 공부 중'으로 본다
+  save();
+  openModal(`
+    <h3 class="text-lg font-bold">⏱ 아직 공부 중이세요?</h3>
+    <p class="mt-1 text-sm text-gray-500 leading-relaxed">${s ? `<b>${esc(s.name)}</b> ` : ''}타이머가 ${fmtKo(Date.now() - D.running.s)}째 켜져 있어요.<br>끄는 걸 잊었다면 공부를 끝낸 시각을 알려주세요.</p>
+    <form data-form="stopat" class="mt-5 space-y-3">
+      <label class="block"><span class="text-sm font-medium text-gray-600">공부를 끝낸 시각</span>
+        <input type="time" name="time" required value="${hhmm(Date.now())}" class="mt-1.5 ${INPUT}"></label>
+      <button class="btn w-full py-3 rounded-2xl font-semibold">이 시각에 끝냈어요</button>
+      <button type="button" data-action="closemodal" class="w-full py-3 rounded-2xl bg-white/70 text-gray-600">네, 계속 공부 중이에요</button>
+    </form>`);
+}
+
+// 공부 기록 하나 고치기 · 지우기 (타이머 끄는 걸 잊었을 때). s · sid 로 찾는다 (창이 열린 사이 기록이 바뀌어도 안전하게)
+function sessionModal(x) {
+  const s = findSubject(x.sid);
+  openModal(`
+    <h3 class="text-lg font-bold">공부 기록 고치기</h3>
+    <p class="mt-1 text-sm text-gray-500">${s ? esc(s.name) : '삭제된 과목'} · ${fmtDateKo(parseKey(x.d))} · ${fmtKo(x.e - x.s)}</p>
+    <form data-form="session" data-s="${x.s}" data-sid="${x.sid}" class="mt-5 space-y-4">
+      <div class="flex gap-2">
+        <label class="block flex-1 min-w-0"><span class="text-sm font-medium text-gray-600">시작</span>
+          <input type="time" name="s" required value="${hhmm(x.s)}" class="mt-1.5 ${INPUT}"></label>
+        <label class="block flex-1 min-w-0"><span class="text-sm font-medium text-gray-600">끝</span>
+          <input type="time" name="e" required value="${hhmm(x.e)}" class="mt-1.5 ${INPUT}"></label>
+      </div>
+      <div class="flex gap-2">
+        <button type="button" data-action="sessiondel" data-s="${x.s}" data-sid="${x.sid}" class="flex-1 py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1"></i>기록 삭제</button>
+        <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
+      </div>
+    </form>`);
+}
+const sessionIndex = (el) => D.sessions.findIndex((y) => y.s === Number(el.dataset.s) && y.sid === el.dataset.sid);
+
+// 할 일을 다 끝낸 순간: 바로 인증샷으로
+function proofPromptModal() {
+  openModal(`
+    <div class="text-center">
+      <div class="text-5xl">🎉</div>
+      <h3 class="mt-2 text-xl font-bold">오늘 할 일을 다 끝냈어요!</h3>
+      <p class="mt-1 text-sm text-gray-500">인증샷까지 올리면 오늘은 벌금 없이 완료예요</p>
+      <div class="mt-5 flex gap-2">${proofButtons('btn flex-1 py-3 rounded-2xl font-semibold text-center', '<i class="fa-solid fa-camera mr-1.5"></i>사진 찍기', 'bg-white/80 flex-1 py-3 rounded-2xl font-semibold text-center', '<i class="fa-regular fa-image mr-1.5"></i>앨범')}</div>
+      <button data-action="closemodal" class="mt-3 w-full py-3 rounded-2xl text-gray-500">나중에 할게요</button>
+    </div>`);
 }
 
 function goalModal() {
@@ -2176,7 +2366,7 @@ function fileModal(f) {
       ? `<div id="preview" class="mt-4 rounded-2xl overflow-hidden bg-white/60"><img src="${f.thumb}" alt="" class="w-full max-h-[60vh] object-contain blur-sm"></div>`
       : `<div class="mt-4 rounded-2xl bg-white/60 py-12 grid place-items-center"><i class="fa-solid ${fileIcon(f)} text-5xl text-brand"></i></div>`}
     <div class="mt-4 flex gap-2">
-      ${f.uid === me ? `<button data-action="filedel" data-id="${f.id}" class="px-5 py-3 rounded-2xl bg-white/70 text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>` : ''}
+      ${f.uid === me || isAdmin() ? `<button data-action="filedel" data-id="${f.id}" class="px-5 py-3 rounded-2xl bg-white/70 text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>` : ''}
       <button data-action="filesave" data-id="${f.id}" class="btn flex-1 py-3 rounded-2xl font-semibold"><i class="fa-solid fa-download mr-1.5"></i>저장</button>
     </div>`, true);
   // 사진이면 흐린 미리보기를 먼저 보여주고, 원본을 받으면 바꾼다
@@ -2232,6 +2422,47 @@ async function saveSettings(patch, doneMsg) {
   }
 }
 
+// 응원 반응 누르기 · 취소. onlyOn 이면 이미 눌렀을 때 그대로 둔다 (두 번 톡 ❤️)
+async function react(id, r, onlyOn = false) {
+  const all = [...proofs, ...myProofs, ...todayProofs].filter((x) => x.id === id);
+  const on = !!all[0]?.reacts?.[r]?.[me];
+  if (on && onlyOn) return;
+  // 먼저 화면에 반영하고 저장
+  for (const p of all) {
+    const who = { ...(p.reacts?.[r] || {}) };
+    on ? delete who[me] : (who[me] = true);
+    p.reacts = { ...p.reacts, [r]: who };
+  }
+  if ($('#modal').innerHTML && ui.openProof === id) proofModal(all[0]); else render();
+  try {
+    await fb.f.updateDoc(docRef('proofs', id), new fb.f.FieldPath('reacts', r, me), on ? fb.f.deleteField() : true);
+  } catch (e) {
+    toast('반응을 남기지 못했어요 · ' + friendly(e));
+  }
+}
+// 두 번 톡: ❤️ 를 남기고 사진 위에 하트를 잠깐 띄운다
+let lastTap = { id: null, at: 0, timer: null };
+function likeBurst(id) {
+  react(id, 'heart', true);
+  const card = $(`[data-action="openproof"][data-dbl][data-id="${id}"]`);
+  if (!card) return;
+  const heart = document.createElement('span');
+  heart.className = 'heart-pop absolute inset-0 grid place-items-center text-5xl pointer-events-none';
+  heart.textContent = '❤️';
+  card.appendChild(heart);
+  setTimeout(() => heart.remove(), 800);
+}
+
+// 할 일 고치기: Enter 를 누르거나 입력칸 밖을 누르면 저장
+function saveTodoEdit(f) {
+  const id = f.dataset.id;
+  if (ui.editTodo !== id) return;
+  ui.editTodo = null;
+  const t = todosOn(ui.todoDate).find((x) => x.id === id), text = f.elements.text.value.trim();
+  if (t && text && text !== t.text && !isLocked(ui.todoDate)) { t.text = text; save(); }
+  render();
+}
+
 const actions = {
   go: (el) => go(el.dataset.view),
   toggle: (el) => toggleSubject(el.dataset.id),
@@ -2267,30 +2498,15 @@ const actions = {
     if (hint) hint.textContent = square ? '사진을 누르면 원본 비율로 볼 수 있어요' : '한 번 더 누르면 정사각형으로 돌아가요';
   },
   reactwho: (el) => {
-    const p = [...proofs, ...myProofs].find((x) => x.id === el.dataset.id);
+    const p = findProof(el.dataset.id);
     if (p) reactWhoModal(p, el.dataset.r);
   },
   proofback: (el) => {
-    const p = [...proofs, ...myProofs].find((x) => x.id === el.dataset.id);
+    const p = findProof(el.dataset.id);
     if (p) proofModal(p);
   },
-  react: async (el) => {
-    const { id, r } = el.dataset;
-    const all = [...proofs, ...myProofs, ...todayProofs].filter((x) => x.id === id);
-    const on = !!all[0]?.reacts?.[r]?.[me];
-    // 먼저 화면에 반영하고 저장
-    for (const p of all) {
-      const who = { ...(p.reacts?.[r] || {}) };
-      on ? delete who[me] : (who[me] = true);
-      p.reacts = { ...p.reacts, [r]: who };
-    }
-    if ($('#modal').innerHTML && ui.openProof === id) proofModal(all[0]); else render();
-    try {
-      await fb.f.updateDoc(docRef('proofs', id), new fb.f.FieldPath('reacts', r, me), on ? fb.f.deleteField() : true);
-    } catch (e) {
-      toast('반응을 남기지 못했어요 · ' + friendly(e));
-    }
-  },
+  react: (el) => react(el.dataset.id, el.dataset.r),
+  proofnav: (el) => proofNav(Number(el.dataset.d)),
   backup: () => backup(),
   theme: (el) => setTheme(el.dataset.mode),
   kick: async (el) => {
@@ -2348,9 +2564,20 @@ const actions = {
   },
   myfine: () => myFineModal(),
   myfinereset: () => { closeModal(); updateProfile({ fineAdjust: 0 }, '계산된 벌금으로 되돌렸어요'); },
-  openproof: (el) => proofModal([...proofs, ...myProofs].find((p) => p.id === el.dataset.id)),
+  // 홈 인증샷 격자: 한 번 톡 = 크게 보기, 두 번 톡 = ❤️
+  openproof: (el) => {
+    const id = el.dataset.id;
+    if (!el.hasAttribute('data-dbl')) return openProof(id, el.dataset.list);
+    if (lastTap.id === id && Date.now() - lastTap.at < 300) {
+      clearTimeout(lastTap.timer);
+      lastTap.id = null;
+      return likeBurst(id);
+    }
+    clearTimeout(lastTap.timer);
+    lastTap = { id, at: Date.now(), timer: setTimeout(() => { lastTap.id = null; openProof(id, el.dataset.list); }, 300) };
+  },
   proofdel: async (el) => {
-    const id = el.dataset.id, p = [...proofs, ...myProofs].find((x) => x.id === id);
+    const id = el.dataset.id, p = findProof(id);
     const mine = p?.uid === me;
     if (!mine && !isAdmin()) return;
     const msg = mine
@@ -2366,7 +2593,6 @@ const actions = {
       toast('삭제하지 못했어요 · ' + friendly(e));
     }
   },
-  feedmore: () => { ui.feedLimit += FEED_PAGE; watchFeed(); },
   quote: () => { ui.quote = pickQuote(ui.quote); render(); },
   editprofile: () => profileModal(),
   photodel: () => { if (confirm('프로필 사진을 삭제할까요?')) updateProfile({ photo: '' }, '사진을 삭제했어요'); },
@@ -2399,7 +2625,7 @@ const actions = {
   },
   filedel: async (el) => {
     const f = files.find((x) => x.id === el.dataset.id);
-    if (!confirm(`'${f.caption || f.name}' 자료를 삭제할까요?`)) return;
+    if (!confirm(`'${f.caption || f.name}' 자료를 삭제할까요?${f.uid === me ? '' : `\n(관리자 권한 · 올린 사람: ${f.by})`}`)) return;
     try { await deleteFile(f); closeModal(); toast('자료를 삭제했어요'); } catch (e) { toast('삭제하지 못했어요 · ' + friendly(e)); }
   },
 
@@ -2423,10 +2649,34 @@ const actions = {
     save();
     render();
   },
+  // 할 일 페이지와 홈 카드에서 함께 쓴다 (홈은 data-date 로 오늘)
   todotoggle: (el) => {
+    const k = el.dataset.date || ui.todoDate;
+    if (isLocked(k)) return;
+    const t = todosOn(k).find((x) => x.id === el.dataset.id);
+    if (!t) return;
+    t.done = !t.done;
+    save();
+    render();
+    // 마지막 할 일을 끝낸 순간, 아직 인증샷이 없으면 바로 올리게
+    if (t.done && k === today && isAchieved(k) && !usedPass(k) && !myProofs.some((p) => p.date === k)) proofPromptModal();
+  },
+  hometodo: () => { ui.homeTodoOpen = !ui.homeTodoOpen; render(); },
+  todoedit: (el) => {
     if (isLocked(ui.todoDate)) return;
-    const t = todosOn(ui.todoDate).find((x) => x.id === el.dataset.id);
-    if (t) { t.done = !t.done; save(); render(); }
+    ui.editTodo = el.dataset.id;
+    render();
+    const input = $('[data-form="todoedit"] input');
+    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  },
+  session: (el) => { const i = sessionIndex(el); if (i >= 0) sessionModal(D.sessions[i]); },
+  sessiondel: (el) => {
+    const i = sessionIndex(el);
+    if (i < 0 || !confirm('이 공부 기록을 지울까요?')) return;
+    D.sessions.splice(i, 1);
+    save();
+    closeModal();
+    toast('공부 기록을 지웠어요');
   },
   tododel: (el) => {
     const k = ui.todoDate;
@@ -2485,6 +2735,30 @@ const forms = {
     save();
     render();
     $('[data-form="todoadd"] input').focus();
+  },
+  todoedit: (f) => saveTodoEdit(f),
+  stopat: (f) => {
+    if (!D.running) return closeModal();
+    const end = lastTimeAt(f.elements.time.value);
+    if (end <= D.running.s) return toast(`타이머를 켠 시각(${fmtClock(D.running.s)})보다 뒤로 골라주세요`);
+    commitRunning(end);
+    save();
+    closeModal();
+    toast(`${fmtClock(end)}에 끝낸 것으로 기록했어요`);
+  },
+  session: (f) => {
+    const i = sessionIndex(f);
+    if (i < 0) return closeModal();
+    const x = D.sessions[i];
+    const s = atTime(x.s, f.elements.s.value);
+    let e = atTime(x.s, f.elements.e.value);
+    if (e <= s) e += DAY; // 자정을 넘긴 경우
+    if (e > Date.now()) return toast('지금보다 늦은 시각은 고를 수 없어요');
+    D.sessions.splice(i, 1);
+    for (const p of splitRange(s, e)) if (p.e - p.s >= 1000) D.sessions.push({ sid: x.sid, ...p });
+    save();
+    closeModal();
+    toast('공부 기록을 고쳤어요');
   },
   subadd: (f) => {
     const name = f.elements.name.value.trim();
@@ -2637,19 +2911,42 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.input === 'proof' && t.files?.[0]) {
     const file = t.files[0];
     t.value = '';
-    toast('인증샷을 올리는 중…');
+    if (ui.proofUploading) return;
+    ui.proofUploading = true; // 올리는 동안 버튼 자리에 '올리는 중…'
+    if ($('#modal').innerHTML) closeModal(); else render(); // 할 일 완료 창에서 올렸으면 닫는다
     try {
       await saveProof(file);
       toast('오늘의 인증샷을 올렸어요 📸');
     } catch (err) {
       toast('올리지 못했어요 · ' + friendly(err));
     }
+    ui.proofUploading = false;
+    refreshView();
   }
   if (t.dataset.input === 'files' && t.files?.length) {
     pending = [...t.files];
     t.value = '';
     uploadModal();
   }
+});
+
+// 할 일 고치는 칸 밖을 누르면 저장
+document.addEventListener('focusout', (e) => {
+  const f = e.target.closest?.('[data-form="todoedit"]');
+  if (f) saveTodoEdit(f);
+});
+
+// 인증샷 크게 보기: 옆으로 밀거나 (휴대폰) ← → 키 (PC) 로 다음 사진
+let swipeX = null;
+document.addEventListener('touchstart', (e) => { swipeX = e.target.closest('[data-swipe]') ? e.touches[0].clientX : null; }, { passive: true });
+document.addEventListener('touchend', (e) => {
+  if (swipeX === null) return;
+  const dx = e.changedTouches[0].clientX - swipeX;
+  swipeX = null;
+  if (Math.abs(dx) > 50) proofNav(dx < 0 ? 1 : -1);
+});
+document.addEventListener('keydown', (e) => {
+  if (ui.openProof && $('#modal').innerHTML && ['ArrowLeft', 'ArrowRight'].includes(e.key)) proofNav(e.key === 'ArrowRight' ? 1 : -1);
 });
 
 // 아이폰 Safari는 확대 금지 설정을 무시해서, 두 손가락 확대 동작을 직접 막는다
