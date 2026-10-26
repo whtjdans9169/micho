@@ -379,7 +379,8 @@ function newData() {
     subjects: DEFAULT_COLORS.map((color, i) => ({ id: uid(), name: `${i + 1}교시`, color })),
     sessions: [], // { sid, s, e, d } — 날짜(d)별로 잘라서 저장
     todos: {},    // { 'YYYY-MM-DD': [{ id, text, done }] }
-    running: null, // { sid, s }
+    running: null, // { sid, s, limit, base } 공부 중
+    paused: null,  // { sid, limit, elapsed } 일시정지 중
     proofDays: [], // 인증샷을 올린 날짜들
     passes: [],    // 패스권을 쓴 날짜들 (일주일에 2번)
     academy: [],   // 학원권을 쓴 날짜들 (일주일에 1번)
@@ -1033,11 +1034,10 @@ function homeView() {
         <div class="text-lg font-medium">${fmtDate(parseKey(today))}</div>
         <button data-action="subjects" class="chip w-10 h-10 rounded-full grid place-items-center" aria-label="과목 편집"><i class="fa-solid fa-palette"></i></button>
       </div>
-      <div class="flex-1 flex flex-col justify-center py-10 text-center">
-        <div class="text-sm text-white/80">오늘 공부한 시간</div>
-        <div class="mt-1 text-6xl md:text-7xl font-semibold tabular-nums tracking-tight" data-live="total">0:00:00</div>
-        <div class="mt-3 text-sm text-white/85" data-live="current"></div>
-        <button data-action="goal" class="chip mt-5 self-center inline-flex items-center gap-2.5 pl-2 pr-4 py-1.5 rounded-full text-sm font-medium" aria-label="하루 목표 공부 시간">
+      <div class="flex-1 flex flex-col justify-center py-8 text-center">
+        ${studyHero()}
+        <div class="mt-5 text-sm text-white/80">오늘 공부한 시간 <b class="text-white tabular-nums" data-live="total">0:00:00</b></div>
+        <button data-action="goal" class="chip mt-3 self-center inline-flex items-center gap-2.5 pl-2 pr-4 py-1.5 rounded-full text-sm font-medium" aria-label="하루 목표 공부 시간">
           <svg viewBox="0 0 36 36" class="w-7 h-7 -rotate-90">
             <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="4"></circle>
             <circle data-live="goalring" cx="18" cy="18" r="15" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-dasharray="94.25" stroke-dashoffset="94.25"></circle>
@@ -1287,12 +1287,109 @@ function subjectRow(s) {
   </li>`;
 }
 
-function toggleSubject(id) {
-  const wasOn = D.running?.sid === id;
+// ---------- 홈 타이머: ① 몇 교시? → ② 제한시간 → ③ 시작 (제한시간이 지나도 시간은 계속 흐른다) ----------
+// D.running = { sid, s, limit(ms, 0이면 없음), base(일시정지 전까지 흐른 시간) }
+// D.paused  = { sid, limit, elapsed } : 일시정지 중인 문제
+const LIMIT_PRESETS = [60, 90, 120, 150, 180]; // 분
+function studyNow() {
+  if (D.running) return { sid: D.running.sid, limit: D.running.limit || 0, elapsed: (D.running.base || 0) + Date.now() - D.running.s, on: true };
+  if (D.paused) return { ...D.paused, on: false };
+  return null;
+}
+const limitLabel = (min) => (min >= 60 ? `${Math.floor(min / 60)}시간${min % 60 ? ` ${min % 60}분` : ''}` : `${min}분`);
+
+function studyHero() {
+  const now = studyNow();
+  // ③ 공부 중 · 일시정지
+  if (now) {
+    const s = findSubject(now.sid) || { name: '삭제된 과목', color: '#CBD5E1' };
+    const btn = 'px-6 py-3 rounded-full font-bold';
+    return `
+    <div class="inline-flex self-center items-center gap-2 chip px-3.5 py-1 rounded-full text-sm font-semibold">
+      <i class="w-2.5 h-2.5 rounded-full inline-block" style="background:${s.color}"></i>${esc(s.name)} · ${now.on ? '집중 중' : '일시정지'}
+    </div>
+    <div class="mt-3 text-6xl md:text-7xl font-semibold tabular-nums tracking-tight ${now.on ? '' : 'opacity-70'}" data-live="elapsed">${fmtHMS(now.elapsed)}</div>
+    ${now.limit ? `
+    <div class="mt-4 w-full max-w-xs self-center">
+      <div class="h-2 rounded-full bg-white/25 overflow-hidden"><div data-live="limitbar" class="h-full rounded-full bg-white" style="width:0"></div></div>
+      <div data-live="limit" class="mt-2 text-sm text-white/90"></div>
+    </div>` : '<div class="mt-2 text-sm text-white/80">제한시간 없이 공부 중</div>'}
+    <div class="mt-5 flex justify-center gap-2">
+      ${now.on
+        ? `<button data-action="studypause" class="${btn} chip"><i class="fa-solid fa-pause mr-1.5"></i>일시정지</button>`
+        : `<button data-action="studyresume" class="${btn} bg-white text-brand-dark"><i class="fa-solid fa-play mr-1.5"></i>다시 시작</button>`}
+      <button data-action="studyend" class="${btn} ${now.on ? 'bg-white text-brand-dark' : 'chip'}"><i class="fa-solid fa-flag-checkered mr-1.5"></i>끝내기</button>
+    </div>`;
+  }
+  // ② 제한시간 정하기
+  const picked = ui.pickSub && findSubject(ui.pickSub);
+  if (picked) {
+    const min = picked.limit ?? 120; // 그 교시에 지난번에 쓴 제한시간
+    return `
+    <button data-action="pickback" class="self-center text-sm text-white/80"><i class="fa-solid fa-chevron-left mr-1"></i>${esc(picked.name)}</button>
+    <div class="mt-2 text-xl font-bold">이 문제를 풀 제한시간을 적어주세요</div>
+    <div class="mt-4 flex flex-wrap justify-center gap-1.5">${LIMIT_PRESETS.map((m) => `
+      <button type="button" data-action="limitpreset" data-m="${m}" class="chip px-3 py-1.5 rounded-full text-sm font-medium">${limitLabel(m)}</button>`).join('')}
+    </div>
+    <form data-form="studystart" class="mt-4 flex flex-col items-center gap-4">
+      <div class="flex items-center justify-center gap-2 text-lg font-semibold">
+        <input name="h" type="number" inputmode="numeric" min="0" max="12" value="${Math.floor(min / 60)}" class="chip w-16 py-2 rounded-xl text-center text-2xl text-white outline-none" aria-label="시간">시간
+        <input name="m" type="number" inputmode="numeric" min="0" max="59" step="5" value="${min % 60}" class="chip w-16 py-2 rounded-xl text-center text-2xl text-white outline-none" aria-label="분">분
+      </div>
+      <button class="px-10 py-3.5 rounded-full bg-white text-brand-dark text-lg font-bold shadow-lg"><i class="fa-solid fa-play mr-2"></i>시작</button>
+      <p class="-mt-2 text-xs text-white/70">0시간 0분이면 제한시간 없이 시작해요</p>
+    </form>`;
+  }
+  // ① 몇 교시?
+  return `
+    <div class="text-2xl md:text-3xl font-bold leading-snug">반가워요!<br>오늘은 몇 교시 공부할 건가요?</div>
+    <div class="mt-6 flex flex-wrap justify-center gap-2">${D.subjects.map((s) => `
+      <button data-action="picksub" data-id="${s.id}" class="chip px-5 py-3 rounded-2xl text-lg font-semibold inline-flex items-center gap-2">
+        <i class="w-3 h-3 rounded-full inline-block" style="background:${s.color}"></i>${esc(s.name)}
+      </button>`).join('') || '<button data-action="subjects" class="chip px-5 py-3 rounded-2xl font-semibold">과목 추가하기</button>'}
+    </div>`;
+}
+
+function startStudy(sid, limit) {
   commitRunning();
-  if (!wasOn) D.running = { sid: id, s: Date.now() };
+  D.paused = null;
+  D.running = { sid, s: Date.now(), limit, base: 0 };
+  ui.pickSub = null;
   save();
   render();
+}
+function pauseStudy() {
+  const now = studyNow();
+  if (!now?.on) return;
+  commitRunning();
+  D.paused = { sid: now.sid, limit: now.limit, elapsed: now.elapsed };
+  save();
+  render();
+}
+function resumeStudy() {
+  const pz = D.paused;
+  if (!pz) return;
+  commitRunning();
+  D.running = { sid: pz.sid, s: Date.now(), limit: pz.limit, base: pz.elapsed };
+  D.paused = null;
+  save();
+  render();
+}
+function endStudy() {
+  const now = studyNow();
+  if (!now) return;
+  commitRunning();
+  D.paused = null;
+  save();
+  render();
+  const s = findSubject(now.sid), over = now.limit ? now.elapsed - now.limit : 0;
+  toast(`${s ? s.name + ' ' : ''}${fmtKo(now.elapsed)} 공부했어요${now.limit ? (over > 0 ? ` · 제한시간보다 ${fmtKo(over)} 더 걸렸어요` : ' · 제한시간 안에 끝냈어요! 👏') : ''}`);
+}
+// 오른쪽 과목 목록의 ▶ 버튼: 공부 중인 과목이면 일시정지, 일시정지한 과목이면 이어서, 아니면 제한시간 없이 새로 시작
+function toggleSubject(id) {
+  if (D.running?.sid === id) return pauseStudy();
+  if (D.paused?.sid === id) return resumeStudy();
+  startStudy(id, 0);
 }
 
 function updateLive() {
@@ -1319,17 +1416,28 @@ function updateLive() {
   if (D.running && !$('#modal').innerHTML && Date.now() - (D.running.asked || D.running.s) > CHECK_AFTER) stillStudyingModal();
   const list = sessionsOn(today);
   const goal = (D.goalHours || 0) * 3600000, pct = goal ? Math.min(1, sumMs(list) / goal) : 0;
+  const study = studyNow(), over = study?.limit ? study.elapsed - study.limit : -1;
   document.querySelectorAll('[data-live]').forEach((el) => {
     const t = el.dataset.live;
     if (t === 'total') el.textContent = fmtHMS(sumMs(list));
     else if (t === 'goalring') el.setAttribute('stroke-dashoffset', String(94.25 * (1 - pct)));
     else if (t === 'goaltext') el.textContent = !goal ? '하루 목표 정하기' : pct >= 1 ? `목표 ${D.goalHours}시간 달성! 🎉` : `목표 ${D.goalHours}시간 · ${Math.floor(pct * 100)}%`;
     else if (t === 'sub') el.textContent = fmtHMS(sumMs(list.filter((x) => x.sid === el.dataset.id)));
-    else if (t === 'current') {
-      const s = D.running && D.subjects.find((x) => x.id === D.running.sid);
-      el.textContent = D.running ? `${s ? s.name : ''} 집중 중 · ${fmtKo(Date.now() - D.running.s)}` : '과목의 ▶ 버튼을 눌러 공부를 시작하세요';
+    else if (study && t === 'elapsed') el.textContent = fmtHMS(study.elapsed);
+    else if (study?.limit && t === 'limitbar') {
+      el.style.width = `${Math.min(100, (study.elapsed / study.limit) * 100)}%`;
+      el.className = `h-full rounded-full ${over >= 0 ? 'bg-red-400' : 'bg-white'}`;
+    } else if (study?.limit && t === 'limit') {
+      el.textContent = over < 0 ? `남은 시간 ${fmtHMS(-over)} · 제한 ${limitLabel(study.limit / 60000)}` : `⏰ 제한시간 ${fmtHMS(over)} 초과 · 시간은 계속 흘러요`;
+      el.className = over < 0 ? 'mt-2 text-sm text-white/90' : 'mt-2 inline-block px-3 py-1 rounded-full bg-red-500 text-white text-sm font-semibold';
     }
   });
+  // 제한시간이 끝나는 순간 한 번 알려준다 (타이머는 멈추지 않는다)
+  if (study?.on && study.limit && over >= 0 && over < 2000 && ui.overAlert !== D.running.s) {
+    ui.overAlert = D.running.s;
+    toast('⏰ 제한시간이 끝났어요! 시간은 계속 흘러가요');
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  }
   document.title = D.running ? `${fmtHMS(sumMs(list))} · ${TITLE}` : TITLE;
 }
 
@@ -2698,6 +2806,16 @@ const actions = {
     // 마지막 할 일을 끝낸 순간, 아직 인증샷이 없으면 바로 올리게
     if (t.done && k === today && isAchieved(k) && !usedPass(k) && !myProofs.some((p) => p.date === k)) proofPromptModal();
   },
+  picksub: (el) => { ui.pickSub = el.dataset.id; render(); },
+  pickback: () => { ui.pickSub = null; render(); },
+  limitpreset: (el) => {
+    const f = $('[data-form="studystart"]'), m = Number(el.dataset.m);
+    f.elements.h.value = Math.floor(m / 60);
+    f.elements.m.value = m % 60;
+  },
+  studypause: () => pauseStudy(),
+  studyresume: () => resumeStudy(),
+  studyend: () => endStudy(),
   hometodo: () => { ui.homeTodoOpen = !homeTodoOpen(); render(); },
   todoedit: (el) => {
     if (isLocked(ui.todoDate)) return;
@@ -2747,6 +2865,7 @@ const actions = {
     const s = findSubject(el.dataset.id);
     if (!confirm(`'${s.name}' 과목을 삭제할까요?\n지금까지의 공부 기록은 통계에 남아요.`)) return;
     if (D.running?.sid === s.id) commitRunning();
+    if (D.paused?.sid === s.id) D.paused = null;
     D.subjects = D.subjects.filter((x) => x.id !== s.id);
     save();
     subjectModal();
@@ -2776,6 +2895,13 @@ const forms = {
     $('[data-form="todoadd"] input').focus();
   },
   todoedit: (f) => saveTodoEdit(f),
+  studystart: (f) => {
+    const s = findSubject(ui.pickSub);
+    if (!s) return;
+    const min = Math.min(12 * 60, Math.max(0, (Number(f.elements.h.value) || 0) * 60 + (Number(f.elements.m.value) || 0)));
+    s.limit = min; // 다음에 이 교시를 고르면 이 시간이 먼저 적혀 있게
+    startStudy(s.id, min * 60000);
+  },
   stopat: (f) => {
     if (!D.running) return closeModal();
     const end = lastTimeAt(f.elements.time.value);
