@@ -269,12 +269,6 @@ const findProof = (id) => [...proofs, ...myProofs, ...todayProofs].find((p) => p
 function proofPhoto(id) {
   return (photoCache[id] ||= fb.f.getDoc(docRef('proofPhotos', id)).then((s) => s.data()?.photo || ''));
 }
-// 화면의 작은 사진을 큰 사진으로 바꿔 끼운다
-function hydrateProofs() {
-  document.querySelectorAll('img[data-proof]').forEach((img) => {
-    proofPhoto(img.dataset.proof).then((src) => { if (src) img.src = src; }).catch(() => {});
-  });
-}
 
 // ---------- 모두의 기록 (벌금 현황 · 멤버 등급 계산용, 통계 · 나 화면을 열 때마다 새로 불러옴) ----------
 async function loadEveryone(retry = true) {
@@ -769,7 +763,6 @@ function render() {
         <div class="mx-auto max-w-6xl px-4 md:px-8 pt-5 md:pt-8 pb-32 md:pb-12">${views[ui.view]()}</div>
       </main>`;
     updateLive();
-    hydrateProofs();
     mountSortables();
     observeFeedEnd();
     balanceNames();
@@ -2080,6 +2073,7 @@ function closeModal() {
   $('#modal').innerHTML = '';
   ui.paletteFor = null;
   ui.openProof = null;
+  ui.proofFull = false;
   ui.ddayModal = false;
   render();
 }
@@ -2222,10 +2216,6 @@ function proofListOf(name) {
   if (name === 'today') return todayProofs.filter((p) => inMyScope(p.uid)).sort((a, b) => b.at - a.at);
   return [];
 }
-function proofNav(d) {
-  const list = proofListOf(ui.proofList), i = list.findIndex((p) => p.id === ui.openProof);
-  if (i >= 0 && list[i + d]) proofModal(list[i + d]);
-}
 function openProof(id, list) {
   const p = findProof(id);
   if (!p) return;
@@ -2233,31 +2223,73 @@ function openProof(id, list) {
   proofModal(p);
 }
 
-function proofModal(p) {
+// 크게 보기: 아이폰 사진첩처럼 사진을 옆으로 밀어서 넘긴다 (가로 스크롤 + 한 장씩 딱 멈춤)
+// 위의 이름 · 날짜와 아래 응원 · 삭제는 지금 보이는 사진에 맞춰 바뀐다
+const proofImgCls = () => (ui.proofFull ? 'w-full max-h-[70vh] object-contain' : 'w-full aspect-square object-cover');
+function proofHead(p, i, n) {
   const who = whoOf(p);
-  const list = proofListOf(ui.proofList), i = list.findIndex((x) => x.id === p.id);
-  const arrow = (d, icon, label) => `<button data-action="proofnav" data-d="${d}" class="absolute top-1/2 -translate-y-1/2 ${d < 0 ? 'left-2' : 'right-2'} w-9 h-9 rounded-full bg-black/35 text-white grid place-items-center" aria-label="${label}"><i class="fa-solid ${icon}"></i></button>`;
+  return `
+    ${avatar(who, 'w-10 h-10 text-sm')}
+    <div class="flex-1 min-w-0">
+      <div class="font-semibold truncate">${esc(who.nick)}</div>
+      <div class="text-xs text-gray-500">${fmtDateKo(parseKey(p.date))} · ${fmtClock(p.at)}${n > 1 ? ` · ${i + 1}/${n}` : ''}</div>
+    </div>`;
+}
+function proofFoot(p) {
+  return `
+    <div class="mt-2 flex gap-1.5">${reactBar(p, false)}</div>
+    ${p.uid === me || isAdmin() ? `<button data-action="proofdel" data-id="${p.id}" class="mt-4 w-full py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1.5"></i>인증샷 삭제${p.uid === me ? '' : ' (관리자)'}</button>` : ''}`;
+}
+function proofModal(p) {
+  let list = proofListOf(ui.proofList);
+  if (!list.some((x) => x.id === p.id)) list = [p];
+  const i = list.findIndex((x) => x.id === p.id);
+  ui.proofItems = list;
+  const arrow = (d, icon, label) => `<button data-action="proofnav" data-d="${d}" class="hidden md:grid absolute top-1/2 -translate-y-1/2 ${d < 0 ? 'left-2' : 'right-2'} w-9 h-9 rounded-full bg-black/35 text-white place-items-center" aria-label="${label}"><i class="fa-solid ${icon}"></i></button>`;
   openModal(`
     <div class="flex items-center gap-3">
-      ${avatar(who, 'w-10 h-10 text-sm')}
-      <div class="flex-1 min-w-0">
-        <div class="font-semibold truncate">${esc(who.nick)}</div>
-        <div class="text-xs text-gray-500">${fmtDateKo(parseKey(p.date))} · ${fmtClock(p.at)}</div>
-      </div>
+      <div data-proofhead class="flex-1 min-w-0 flex items-center gap-3">${proofHead(p, i, list.length)}</div>
       <button data-action="closemodal" class="w-8 h-8 shrink-0 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
     </div>
-    <div data-swipe class="relative mt-4">
-      <button data-action="prooftoggle" class="block w-full rounded-2xl overflow-hidden bg-white/40" aria-label="원본 비율로 보기">
-        <img data-proof="${p.id}" src="${p.thumb}" alt="" class="w-full aspect-square object-cover">
-      </button>
-      ${i > 0 ? arrow(-1, 'fa-chevron-left', '이전 인증샷') : ''}
-      ${i >= 0 && i < list.length - 1 ? arrow(1, 'fa-chevron-right', '다음 인증샷') : ''}
+    <div class="relative mt-4">
+      <div data-strip class="no-scrollbar flex items-center overflow-x-auto snap-x snap-mandatory rounded-2xl" style="touch-action:pan-x pan-y;overscroll-behavior-x:contain">${list.map((x) => `
+        <button data-action="prooftoggle" class="w-full shrink-0 snap-center snap-always bg-white/40" aria-label="원본 비율로 보기">
+          <img data-pid="${x.id}" src="${x.thumb}" alt="" draggable="false" class="${proofImgCls()}">
+        </button>`).join('')}
+      </div>
+      ${list.length > 1 ? arrow(-1, 'fa-chevron-left', '이전 인증샷') + arrow(1, 'fa-chevron-right', '다음 인증샷') : ''}
     </div>
-    <p data-proofhint class="mt-1.5 text-center text-xs text-gray-500">사진을 누르면 원본 비율로 볼 수 있어요${list.length > 1 ? ' · 옆으로 밀면 다음 사진' : ''}</p>
-    <div class="mt-2 flex gap-1.5">${reactBar(p, false)}</div>
-    ${p.uid === me || isAdmin() ? `<button data-action="proofdel" data-id="${p.id}" class="mt-4 w-full py-3 rounded-2xl bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1.5"></i>인증샷 삭제${p.uid === me ? '' : ' (관리자)'}</button>` : ''}`);
+    <p data-proofhint class="mt-1.5 text-center text-xs text-gray-500">${proofHint(list.length)}</p>
+    <div data-prooffoot>${proofFoot(p)}</div>`);
   ui.openProof = p.id;
-  hydrateProofs();
+  const strip = $('[data-strip]');
+  strip.scrollLeft = i * strip.clientWidth;
+  loadNearProofs(i);
+  // 밀면서 사진이 반 넘게 바뀌면 바로 이름 · 응원을 바꾼다
+  strip.addEventListener('scroll', () => proofSlideTo(Math.round(strip.scrollLeft / strip.clientWidth)), { passive: true });
+}
+const proofHint = (n) => (ui.proofFull ? '한 번 더 누르면 정사각형으로 돌아가요' : '사진을 누르면 원본 비율로 볼 수 있어요') + (n > 1 ? ' · 옆으로 밀면 다음 사진' : '');
+function proofSlideTo(i) {
+  const list = ui.proofItems || [], p = list[i];
+  if (!p || p.id === ui.openProof) return;
+  ui.openProof = p.id;
+  $('[data-proofhead]').innerHTML = proofHead(p, i, list.length);
+  $('[data-prooffoot]').innerHTML = proofFoot(findProof(p.id) || p);
+  loadNearProofs(i);
+}
+// 지금 사진과 양옆 사진만 큰 사진으로 바꿔 끼운다 (목록 전체를 받지 않도록)
+function loadNearProofs(i) {
+  for (const x of (ui.proofItems || []).slice(Math.max(0, i - 1), i + 2)) {
+    proofPhoto(x.id).then((src) => {
+      const img = $(`[data-strip] img[data-pid="${x.id}"]`);
+      if (src && img) img.src = src;
+    }).catch(() => {});
+  }
+}
+// ‹ › 버튼 · ← → 키: 부드럽게 한 장 넘기기
+function proofNav(d) {
+  const strip = $('[data-strip]');
+  if (strip) strip.scrollTo({ left: (Math.round(strip.scrollLeft / strip.clientWidth) + d) * strip.clientWidth, behavior: 'smooth' });
 }
 
 function stillStudyingModal() {
@@ -2438,7 +2470,7 @@ async function react(id, r, onlyOn = false) {
     on ? delete who[me] : (who[me] = true);
     p.reacts = { ...p.reacts, [r]: who };
   }
-  if ($('#modal').innerHTML && ui.openProof === id) proofModal(all[0]); else render();
+  if ($('#modal [data-prooffoot]') && ui.openProof === id) $('[data-prooffoot]').innerHTML = proofFoot(all[0]); else render();
   try {
     await fb.f.updateDoc(docRef('proofs', id), new fb.f.FieldPath('reacts', r, me), on ? fb.f.deleteField() : true);
   } catch (e) {
@@ -2494,13 +2526,13 @@ const actions = {
   goal: () => goalModal(),
   goalclear: () => { D.goalHours = 0; save(); closeModal(); },
   // 크게 보기: 정사각형 ↔ 원본 비율
-  prooftoggle: (el) => {
-    const img = el.querySelector('img'), square = img.classList.toggle('aspect-square');
-    img.classList.toggle('object-cover', square);
-    img.classList.toggle('object-contain', !square);
-    img.classList.toggle('max-h-[70vh]', !square);
-    const hint = $('[data-proofhint]');
-    if (hint) hint.textContent = square ? '사진을 누르면 원본 비율로 볼 수 있어요' : '한 번 더 누르면 정사각형으로 돌아가요';
+  // 모든 사진을 함께 바꿔서, 넘겨도 같은 보기가 이어진다
+  prooftoggle: () => {
+    const strip = $('[data-strip]'), i = Math.round(strip.scrollLeft / strip.clientWidth);
+    ui.proofFull = !ui.proofFull;
+    strip.querySelectorAll('img').forEach((img) => { img.className = proofImgCls(); });
+    strip.scrollLeft = i * strip.clientWidth;
+    $('[data-proofhint]').textContent = proofHint(ui.proofItems?.length || 1);
   },
   reactwho: (el) => {
     const p = findProof(el.dataset.id);
@@ -2943,15 +2975,7 @@ document.addEventListener('focusout', (e) => {
   if (f) saveTodoEdit(f);
 });
 
-// 인증샷 크게 보기: 옆으로 밀거나 (휴대폰) ← → 키 (PC) 로 다음 사진
-let swipeX = null;
-document.addEventListener('touchstart', (e) => { swipeX = e.target.closest('[data-swipe]') ? e.touches[0].clientX : null; }, { passive: true });
-document.addEventListener('touchend', (e) => {
-  if (swipeX === null) return;
-  const dx = e.changedTouches[0].clientX - swipeX;
-  swipeX = null;
-  if (Math.abs(dx) > 50) proofNav(dx < 0 ? 1 : -1);
-});
+// 인증샷 크게 보기: PC 는 ← → 키로도 넘긴다
 document.addEventListener('keydown', (e) => {
   if (ui.openProof && $('#modal').innerHTML && ['ArrowLeft', 'ArrowRight'].includes(e.key)) proofNav(e.key === 'ArrowRight' ? 1 : -1);
 });
