@@ -485,8 +485,10 @@ function ddayText(date) {
 const ddayLabel = () => ddayText(ddayList()[0].date);
 
 // 벌금: 시작일(또는 가입일)부터 어제까지, 할 일을 안 적었거나 · 다 못 끝냈거나 · 인증샷이 없는 날마다 부과
-// 본인이 금액을 고치면 그 차이(fineAdjust)를 프로필에 저장해서, 이후 벌금은 그 위에 계속 더해진다
+// 관리자만 금액을 고칠 수 있다: 그 차이를 settings.fineAdjust[id] 에 저장해서, 이후 벌금은 그 위에 계속 더해진다
+// (예전에 멤버가 직접 고쳐서 프로필에 남은 fineAdjust 는 쓰지 않는다 → 계산된 금액으로 원상복구)
 // from ~ to(그날은 빼고) 사이만 센다. 기본은 처음부터 어제까지 (주간 결산은 지난주 월~일)
+const fineAdjustOf = (id) => settings.fineAdjust?.[id] || 0;
 function fineBase(id, from = '', to = today) {
   const p = profiles[id] || {};
   const data = (id === me ? D : allData[id]) || {};
@@ -520,7 +522,7 @@ function fineBoard() {
   if (!allData) return null;
   return activeMembers().filter(([id]) => inMyScope(id)).map(([id, p]) => {
     const { missed, base } = fineBase(id);
-    const adjust = p.fineAdjust || 0;
+    const adjust = fineAdjustOf(id);
     return { id, nick: p.nick || '이름 없음', photo: p.photo, missed, edited: !!adjust, amount: Math.max(0, base + adjust) };
   }).sort((a, b) => b.amount - a.amount || a.nick.localeCompare(b.nick));
 }
@@ -535,7 +537,7 @@ function teamFines(week = false) {
   for (const [id, p] of activeMembers()) {
     const g = groups.find((x) => x.team === teamOf(id));
     const { missed, base } = week ? fineBase(id, lastMonday(), thisMonday()) : fineBase(id);
-    const amount = week ? base : Math.max(0, base + (p.fineAdjust || 0));
+    const amount = week ? base : Math.max(0, base + fineAdjustOf(id));
     g.total += amount;
     g.people.push({ id, nick: p.nick || '', missed, amount });
   }
@@ -1654,9 +1656,7 @@ function fineCard() {
             ${r.missed && (isAdmin() || r.id === me) ? `<button data-action="finedays" data-id="${r.id}" class="block text-xs text-gray-500 underline decoration-dotted underline-offset-2">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''} 보기</button>` : `<span class="block text-xs text-gray-500">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''}</span>`}
           </span>
           <span class="text-right font-bold tabular-nums whitespace-nowrap">${won(r.amount)}</span>
-          ${r.id === me
-            ? `<button data-action="myfine" class="w-7 text-gray-400" aria-label="내 벌금 수정"><i class="fa-solid fa-pen text-sm"></i></button>`
-            : '<span class="w-7"></span>'}
+          ${isAdmin() ? `<button data-action="fineedit" data-id="${r.id}" class="w-7 text-gray-400" aria-label="${esc(r.nick)} 벌금 수정"><i class="fa-solid fa-pen text-sm"></i></button>` : ''}
         </li>`).join('')}
       </ol>
       <p class="mt-3 text-right text-sm text-gray-600">총 벌금 <b class="text-brand">${won(total)}</b></p>`
@@ -2256,7 +2256,7 @@ function fineModal() {
 // 벌금이 붙은 날짜와 이유 (관리자는 모두, 멤버는 본인 것만)
 function fineDaysModal(id) {
   const p = profiles[id] || {}, { days, base } = fineBase(id);
-  const adjust = p.fineAdjust || 0;
+  const adjust = fineAdjustOf(id);
   openModal(`
     <div class="flex items-center justify-between">
       <h3 class="text-lg font-bold">${esc(p.nick || '')} 님의 벌금 날짜</h3>
@@ -2299,17 +2299,18 @@ function exemptModal() {
     </ul>`);
 }
 
-function myFineModal() {
-  const { missed, base } = fineBase(me);
-  const current = Math.max(0, base + (myProfile().fineAdjust || 0));
+// 관리자: 멤버 벌금 금액 고치기
+function fineEditModal(id) {
+  const { missed, base } = fineBase(id);
+  const current = Math.max(0, base + fineAdjustOf(id));
   openModal(`
-    <h3 class="text-lg font-bold">내 벌금 수정</h3>
+    <h3 class="text-lg font-bold">${esc(profiles[id]?.nick || '')} 님 벌금 수정 <span class="text-sm font-normal text-gray-500">관리자</span></h3>
     <p class="mt-1 text-sm text-gray-500">예) 벌금을 냈다면 0원으로 바꿔주세요. 앞으로 생기는 벌금은 이 금액에 더해져요.</p>
     <p class="mt-3 text-xs text-gray-500">계산된 벌금: ${missed}일 · ${won(base)}</p>
-    <form data-form="myfine" class="mt-3 space-y-4">
+    <form data-form="fineedit" data-id="${id}" class="mt-3 space-y-4">
       <input type="number" name="amount" required min="0" step="100" inputmode="numeric" value="${current}" class="${INPUT}">
       <div class="flex gap-2">
-        <button type="button" data-action="myfinereset" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">계산값으로</button>
+        <button type="button" data-action="finereset" data-id="${id}" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">계산값으로</button>
         <button class="btn flex-1 py-3 rounded-2xl font-semibold">저장</button>
       </div>
     </form>`);
@@ -2565,6 +2566,18 @@ async function saveSettings(patch, doneMsg) {
   }
 }
 
+// 관리자: 벌금 수정값 저장 (0이면 지워서 계산값으로). 화면은 설정 실시간 구독으로 바로 바뀐다
+async function setFineAdjust(id, adjust, doneMsg) {
+  if (!isAdmin()) return toast('관리자만 바꿀 수 있어요');
+  try {
+    await fb.f.setDoc(docRef('board', 'settings'), { fineAdjust: { [id]: adjust || fb.f.deleteField() } }, { merge: true });
+    closeModal();
+    toast(doneMsg);
+  } catch (e) {
+    toast('저장하지 못했어요 · ' + friendly(e));
+  }
+}
+
 // 응원 반응 누르기 · 취소. onlyOn 이면 이미 눌렀을 때 그대로 둔다 (두 번 톡 ❤️)
 async function react(id, r, onlyOn = false) {
   const all = [...proofs, ...myProofs, ...todayProofs].filter((x) => x.id === id);
@@ -2705,8 +2718,8 @@ const actions = {
       toast('되돌리지 못했어요 · ' + friendly(e));
     }
   },
-  myfine: () => myFineModal(),
-  myfinereset: () => { closeModal(); updateProfile({ fineAdjust: 0 }, '계산된 벌금으로 되돌렸어요'); },
+  fineedit: (el) => { if (isAdmin()) fineEditModal(el.dataset.id); },
+  finereset: (el) => setFineAdjust(el.dataset.id, 0, '계산된 벌금으로 되돌렸어요'),
   // 홈 인증샷 격자: 한 번 톡 = 크게 보기, 두 번 톡 = ❤️
   openproof: (el) => {
     const id = el.dataset.id;
@@ -2939,10 +2952,9 @@ const forms = {
     save();
     closeModal();
   },
-  myfine: (f) => {
-    const amount = Math.max(0, Number(f.elements.amount.value) || 0);
-    $('#modal').innerHTML = '';
-    updateProfile({ fineAdjust: amount - fineBase(me).base }, '내 벌금을 수정했어요');
+  fineedit: (f) => {
+    const id = f.dataset.id, amount = Math.max(0, Number(f.elements.amount.value) || 0);
+    setFineAdjust(id, amount - fineBase(id).base, `${profiles[id]?.nick || ''} 님 벌금을 ${won(amount)}으로 수정했어요`);
   },
   exempt: async (f) => {
     const date = f.elements.date.value, who = f.elements.who.value, reason = f.elements.reason.value.trim();
