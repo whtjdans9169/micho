@@ -2109,9 +2109,12 @@ async function scanAll(onStep) {
   const usage = { proofs: 0, files: 0, records: 0, biggest: { id: '', bytes: 0 } };
   for (const col of ['users', 'realnames', 'data', 'quotes', 'board', 'files', 'proofs', 'proofPhotos']) {
     onStep(col);
-    const snap = await f.getDocs(f.collection(db, col));
+    // board 는 보안 규칙이 문서별(settings · notice)로만 열려 있어서 목록 대신 하나씩 읽는다
+    const docs = col === 'board'
+      ? (await Promise.all(['settings', 'notice'].map((id) => f.getDoc(docRef('board', id))))).filter((d) => d.exists())
+      : (await f.getDocs(f.collection(db, col))).docs;
     out[col] = {};
-    for (const d of snap.docs) {
+    for (const d of docs) {
       const data = d.data(), bytes = docBytes(data);
       out[col][d.id] = data;
       if (col === 'proofs' || col === 'proofPhotos') usage.proofs += bytes;
@@ -2154,8 +2157,9 @@ async function backup(save) {
   if (!isAdmin()) return;
   const btn = $(`[data-action="${save ? 'backup' : 'usage'}"]`), label = btn?.innerHTML;
   if (btn) btn.disabled = true;
+  let at = '';
   try {
-    const { out, usage } = await scanAll((step) => { if (btn) btn.textContent = `읽는 중… ${step}`; });
+    const { out, usage } = await scanAll((step) => { at = step; if (btn) btn.textContent = `읽는 중… ${step}`; });
     if (save) {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
@@ -2164,7 +2168,7 @@ async function backup(save) {
     }
     usageModal(usage, save);
   } catch (e) {
-    toast((save ? '백업하지 못했어요 · ' : '용량을 확인하지 못했어요 · ') + friendly(e));
+    toast((save ? '백업하지 못했어요' : '용량을 확인하지 못했어요') + ` (${at}) · ` + friendly(e));
   }
   if (btn) { btn.disabled = false; btn.innerHTML = label; }
 }
