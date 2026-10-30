@@ -2048,8 +2048,9 @@ function profileView() {
     ${isAdmin() ? `
     <section class="${CARD}">
       <h3 class="font-semibold"><i class="fa-solid fa-shield-halved mr-1.5 text-gray-500"></i>관리자 도구</h3>
-      <p class="mt-1 text-xs text-gray-500 leading-relaxed">멤버 · 기록 · 할 일 · 명언 · 공지 · 설정 · 자료 목록 · 인증샷 목록을 파일 하나로 받아요. 큰 사진 원본과 자료 파일 내용은 용량이 커서 빠져요.</p>
-      <button data-action="backup" class="btn mt-3 w-full py-3 rounded-2xl font-semibold"><i class="fa-solid fa-download mr-1.5"></i>데이터 백업 받기</button>
+      <p class="mt-1 text-xs text-gray-500 leading-relaxed">멤버 · 실명 · 기록 · 할 일 · 명언 · 공지 · 설정 · 인증샷(원본 사진 포함) · 자료 파일까지 전부 파일 하나로 받아요. 받으면서 저장 공간도 알려줘요.</p>
+      <button data-action="backup" class="btn mt-3 w-full py-3 rounded-2xl font-semibold"><i class="fa-solid fa-download mr-1.5"></i>전체 백업 받기</button>
+      <button data-action="usage" class="mt-2 w-full py-3 rounded-2xl bg-white/70 text-gray-600 font-semibold"><i class="fa-solid fa-database mr-1.5"></i>저장 공간만 확인</button>
     </section>` : ''}
     <section class="${CARD}">
       <h3 class="font-semibold">등급 기준</h3>
@@ -2097,23 +2098,75 @@ function withdrawModal() {
 
 // 비밀번호로 한 번 더 확인한 뒤, 내 데이터를 지우고 로그인 계정까지 삭제한다
 // 관리자 백업: 주요 데이터를 JSON 파일 하나로 내려받는다
-async function backup() {
-  if (!isAdmin()) return;
-  toast('백업 파일을 만드는 중…');
-  try {
-    const out = { app: '동기들과스터디', exportedAt: new Date().toISOString() };
-    for (const col of ['users', 'realnames', 'data', 'quotes', 'board', 'files', 'proofs']) {
-      const snap = await fb.f.getDocs(fb.f.collection(fb.db, col));
-      out[col] = Object.fromEntries(snap.docs.map((d) => [d.id, d.data()]));
+// 전체 백업: 인증샷 원본(proofPhotos)과 자료 파일 조각(chunks, base64)까지 모두 담는다
+// 읽는 김에 저장 공간도 잰다 (Firestore 무료 저장 공간 1GB, 문서 하나는 최대 1MB)
+const FREE_STORAGE = 1024 ** 3;
+const DOC_LIMIT = 1024 ** 2;
+const docBytes = (data) => new Blob([JSON.stringify(data, (k, v) => (v instanceof fb.f.Bytes ? 'x'.repeat(v.toUint8Array().length) : v))]).size + 64;
+async function scanAll(onStep) {
+  const { f, db } = fb;
+  const out = { app: '동기들과스터디', exportedAt: new Date().toISOString() };
+  const usage = { proofs: 0, files: 0, records: 0, biggest: { id: '', bytes: 0 } };
+  for (const col of ['users', 'realnames', 'data', 'quotes', 'board', 'files', 'proofs', 'proofPhotos']) {
+    onStep(col);
+    const snap = await f.getDocs(f.collection(db, col));
+    out[col] = {};
+    for (const d of snap.docs) {
+      const data = d.data(), bytes = docBytes(data);
+      out[col][d.id] = data;
+      if (col === 'proofs' || col === 'proofPhotos') usage.proofs += bytes;
+      else if (col === 'files') usage.files += bytes;
+      else usage.records += bytes;
+      if (col === 'data' && bytes > usage.biggest.bytes) usage.biggest = { id: d.id, bytes };
     }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' }));
-    a.download = `동기들과스터디-백업-${today}.json`;
-    a.click();
-    toast('백업 파일을 받았어요');
-  } catch (e) {
-    toast('백업하지 못했어요 · ' + friendly(e));
   }
+  // 자료 파일 내용 (조각을 하나씩)
+  out.fileChunks = {};
+  const list = Object.entries(out.files);
+  for (const [i, [id, file]] of list.entries()) {
+    onStep(`자료 ${i + 1}/${list.length}`);
+    const parts = await Promise.all([...Array(file.chunks || 0)].map((_, n) => f.getDoc(f.doc(db, 'files', id, 'chunks', String(n)))));
+    out.fileChunks[id] = parts.map((p) => {
+      const b = p.data()?.data;
+      if (b) usage.files += b.toUint8Array().length + 64;
+      return b ? b.toBase64() : '';
+    });
+  }
+  usage.total = usage.proofs + usage.files + usage.records;
+  return { out, usage };
+}
+const mb = (n) => (n < 1024 ** 2 ? `${Math.max(1, Math.round(n / 1024))}KB` : `${(n / 1024 ** 2).toFixed(1)}MB`);
+function usageModal(u, saved) {
+  const pct = (u.total / FREE_STORAGE) * 100;
+  const row = (label, n) => `<li class="flex justify-between"><span class="text-gray-600">${label}</span><span class="font-semibold tabular-nums">${mb(n)}</span></li>`;
+  openModal(`
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-bold">저장 공간</h3>
+      <button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    ${saved ? '<p class="mt-1 text-sm text-brand font-semibold"><i class="fa-solid fa-circle-check mr-1"></i>백업 파일을 받았어요</p>' : ''}
+    <div class="mt-4 text-3xl font-bold tabular-nums">${pct < 1 ? pct.toFixed(1) : Math.round(pct)}% <span class="text-base font-medium text-gray-500">약 ${mb(u.total)} / 1GB</span></div>
+    <div class="mt-2 h-2.5 rounded-full bg-white/70 overflow-hidden"><div class="btn h-full rounded-full" style="width:${Math.max(1, Math.min(100, pct))}%"></div></div>
+    <ul class="mt-4 space-y-1.5 text-sm">${row('인증샷 사진', u.proofs)}${row('자료 파일', u.files)}${row('기록 · 프로필 · 설정', u.records)}</ul>
+    <p class="mt-4 text-xs text-gray-500 leading-relaxed">가장 큰 개인 기록: ${esc(profiles[u.biggest.id]?.nick || '-')} ${mb(u.biggest.bytes)} (한 사람 기록은 최대 1MB · ${Math.round((u.biggest.bytes / DOC_LIMIT) * 100)}%)<br>Firebase가 실제로 계산하는 값은 색인 때문에 이보다 조금 더 클 수 있어요.</p>`);
+}
+async function backup(save) {
+  if (!isAdmin()) return;
+  const btn = $(`[data-action="${save ? 'backup' : 'usage'}"]`), label = btn?.innerHTML;
+  if (btn) btn.disabled = true;
+  try {
+    const { out, usage } = await scanAll((step) => { if (btn) btn.textContent = `읽는 중… ${step}`; });
+    if (save) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
+      a.download = `동기들과스터디-전체백업-${today}.json`;
+      a.click();
+    }
+    usageModal(usage, save);
+  } catch (e) {
+    toast((save ? '백업하지 못했어요 · ' : '용량을 확인하지 못했어요 · ') + friendly(e));
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = label; }
 }
 
 // 화면 모드: 시스템 · 라이트 · 다크 (이 기기에만 저장)
@@ -2663,7 +2716,8 @@ const actions = {
   },
   react: (el) => react(el.dataset.id, el.dataset.r),
   proofnav: (el) => proofNav(Number(el.dataset.d)),
-  backup: () => backup(),
+  backup: () => backup(true),
+  usage: () => backup(false),
   theme: (el) => setTheme(el.dataset.mode),
   kick: async (el) => {
     const id = el.dataset.id, nick = profiles[id]?.nick || '이름 없음';
