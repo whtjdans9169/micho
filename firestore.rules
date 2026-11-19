@@ -28,6 +28,14 @@ service cloud.firestore {
       allow read: if signedIn();
       allow write: if isAdmin();
     }
+    // 비밀번호 초기화 요청: 로그인 못 한 사람도 남길 수 있게 (닉네임 · 실명 · 시각만, 짧게), 보고 지우는 건 관리자만
+    match /pwRequests/{id} {
+      allow create: if request.resource.data.keys().hasOnly(['nick', 'real', 'at'])
+        && request.resource.data.nick is string && request.resource.data.nick.size() <= 20
+        && request.resource.data.real is string && request.resource.data.real.size() <= 20
+        && request.resource.data.at is number;
+      allow read, delete: if isAdmin();
+    }
     // 공지: 누구나
     match /board/notice {
       allow read, write: if signedIn();

@@ -316,6 +316,7 @@ let todayProofs = [];  // 오늘 올라온 인증샷 (오늘의 인증 현황)
 let todayOff = null;   // 오늘 인증샷 구독 해제 (자정이 지나면 새 날짜로 다시 구독)
 let unwatch = [];      // 실시간 구독 해제 함수들
 let feedOff = null;    // 인증샷 피드 구독 해제 (더 보기로 개수가 바뀌면 다시 구독)
+let pwRequests = [];   // 비밀번호 초기화 요청 (관리자에게만 채워짐)
 let today = dkey();
 const ui = {
   view: 'home',
@@ -600,6 +601,14 @@ async function enter(id) {
       refreshView();
     }, ignore),
   ];
+  // 관리자: 비밀번호 초기화 요청을 실시간으로
+  pwRequests = [];
+  if (isAdmin()) {
+    unwatch.push(f.onSnapshot(f.collection(fb.db, 'pwRequests'), (snap) => {
+      pwRequests = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.at - b.at);
+      refreshView();
+    }, ignore));
+  }
   ui.feedLimit = FEED_PAGE;
   watchFeed();
   watchToday();
@@ -875,6 +884,7 @@ function loginView() {
         </label>
         ${ui.authError ? `<p class="text-sm text-red-500">${esc(ui.authError)}</p>` : ''}
         <button data-submit class="btn w-full py-3.5 rounded-2xl font-semibold text-lg">${signup ? '시작하기' : '로그인'}</button>
+        ${signup ? '' : '<button type="button" data-action="forgotpw" class="block mx-auto text-sm text-gray-500 underline underline-offset-2">비밀번호를 잊었어요</button>'}
       </form>
     </div>
   </div>`;
@@ -1026,6 +1036,7 @@ function homeProofRow() {
 function homeView() {
   const q = ui.quote;
   return `
+  ${pwRequestBanner()}
   ${eveningReminder()}
   ${noticeBanner()}
   <div class="grid grid-cols-1 gap-4 lg:gap-6 lg:grid-cols-5">
@@ -2006,6 +2017,75 @@ function membersCard() {
   </section>`;
 }
 
+// ---------- 비밀번호 찾기: 멤버가 요청 → 관리자가 확인하고 000000 으로 초기화 → 멤버가 로그인해서 새 비밀번호 ----------
+const uidOfNick = (nick) => Object.keys(profiles).find((id) => profiles[id]?.nick === nick);
+function pwRequestList() {
+  if (!pwRequests.length) return '';
+  return `
+    <div class="mt-3 p-3 rounded-2xl bg-amber-100/90 text-amber-900">
+      <h4 class="text-sm font-bold">🔑 비밀번호 초기화 요청 ${pwRequests.length}건</h4>
+      <p class="mt-0.5 text-xs">실명이 맞는지 확인하고 초기화하면, 그 멤버는 <b>000000</b>으로 로그인해서 새 비밀번호를 정해요.</p>
+      <ul class="mt-2 space-y-2">${pwRequests.map((r) => {
+        const id = uidOfNick(r.nick), saved = id && realNames[id];
+        const check = !id ? '<span class="text-red-600 font-semibold">이 닉네임의 멤버가 없어요</span>'
+          : !saved ? '<span>저장된 실명 없음</span>'
+          : saved === r.real ? '<span class="text-emerald-700 font-semibold">✓ 실명 일치</span>'
+          : `<span class="text-red-600 font-semibold">실명 다름 (저장된 실명: ${esc(saved)})</span>`;
+        return `
+        <li class="p-2.5 rounded-xl bg-white/70 text-sm">
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="font-semibold truncate">${esc(r.nick)} <span class="font-normal text-gray-600">(${esc(r.real)})</span></span>
+            <span class="text-xs text-gray-500 whitespace-nowrap">${fmtWhen(r.at)}</span>
+          </div>
+          <div class="mt-0.5 text-xs">${check}</div>
+          <div class="mt-2 flex gap-2">
+            <button data-action="pwreset" data-id="${r.id}" ${id ? '' : 'disabled'} class="btn flex-1 py-2 rounded-xl text-xs font-semibold">000000으로 초기화</button>
+            <button data-action="pwreqdel" data-id="${r.id}" class="px-3 py-2 rounded-xl bg-white/80 text-xs text-gray-600">요청 지우기</button>
+          </div>
+        </li>`;
+      }).join('')}</ul>
+    </div>`;
+}
+// 관리자 홈 맨 위 알림
+const pwRequestBanner = () => (isAdmin() && pwRequests.length ? `
+  <button data-action="go" data-view="me" class="w-full mb-4 lg:mb-6 p-4 rounded-3xl text-left flex items-center gap-3 bg-amber-100/90 text-amber-900 shadow-sm">
+    <span class="text-2xl">🔑</span>
+    <span class="flex-1 min-w-0 font-semibold">비밀번호 초기화 요청 ${pwRequests.length}건 · 나 메뉴의 관리자 도구에서 처리해요</span>
+    <i class="fa-solid fa-chevron-right"></i>
+  </button>` : '');
+function forgotPwModal() {
+  openModal(`
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-bold">비밀번호를 잊었어요</h3>
+      <button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <p class="mt-1 text-sm text-gray-500 leading-relaxed">관리자에게 초기화를 요청해요. 관리자가 확인하면 비밀번호가 <b>000000</b>으로 바뀌고, 그걸로 로그인해서 새 비밀번호를 정하면 돼요.</p>
+    <form data-form="pwrequest" class="mt-5 space-y-3">
+      <input name="nick" required maxlength="20" autocomplete="username" value="${esc($('[name="nick"]')?.value || ui.lastNick)}" placeholder="닉네임" class="${INPUT}">
+      <input name="real" required maxlength="20" autocomplete="name" placeholder="실명 (본인 확인용 · 관리자만 봐요)" class="${INPUT}">
+      <button data-submit class="btn w-full py-3 rounded-2xl font-semibold disabled:opacity-60">초기화 요청 보내기</button>
+    </form>`);
+}
+async function resetPassword(r) {
+  const id = uidOfNick(r.nick);
+  if (!id || !isAdmin()) return;
+  if (!confirm(`'${r.nick}' 님의 비밀번호를 000000으로 초기화할까요?`)) return;
+  try {
+    const token = await fb.auth.currentUser.getIdToken();
+    const res = await fetch('/api/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ uid: id }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || `서버 오류 (${res.status})`);
+    await fb.f.deleteDoc(docRef('pwRequests', r.id));
+    toast(`${r.nick} 님 비밀번호를 000000으로 초기화했어요. 알려주세요!`);
+  } catch (e) {
+    toast('초기화하지 못했어요 · ' + (e.message || friendly(e)));
+  }
+}
+
 function profileView() {
   const u = myProfile(), g = gradeInfo(), q = allQuotes();
   const bar = (label, v, max) => `
@@ -2051,6 +2131,7 @@ function profileView() {
     <section class="${CARD}">
       <h3 class="font-semibold"><i class="fa-solid fa-shield-halved mr-1.5 text-gray-500"></i>관리자 도구</h3>
       <p class="mt-1 text-xs text-gray-500 leading-relaxed">멤버 · 실명 · 기록 · 할 일 · 명언 · 공지 · 설정 · 인증샷(원본 사진 포함) · 자료 파일까지 전부 파일 하나로 받아요. 받으면서 저장 공간도 알려줘요.</p>
+      ${pwRequestList()}
       <button data-action="backup" class="btn mt-3 w-full py-3 rounded-2xl font-semibold"><i class="fa-solid fa-download mr-1.5"></i>전체 백업 받기</button>
       <button data-action="usage" class="mt-2 w-full py-3 rounded-2xl bg-white/70 text-gray-600 font-semibold"><i class="fa-solid fa-database mr-1.5"></i>저장 공간만 확인</button>
     </section>` : ''}
@@ -2988,6 +3069,12 @@ const actions = {
     subjectModal();
   },
 
+  forgotpw: () => forgotPwModal(),
+  pwreset: (el) => { const r = pwRequests.find((x) => x.id === el.dataset.id); if (r) resetPassword(r); },
+  pwreqdel: async (el) => {
+    if (!confirm('이 요청을 지울까요?')) return;
+    try { await fb.f.deleteDoc(docRef('pwRequests', el.dataset.id)); } catch (e) { toast('지우지 못했어요 · ' + friendly(e)); }
+  },
   authmode: (el) => {
     ui.lastNick = $('[name="nick"]')?.value || ui.lastNick;
     ui.authMode = el.dataset.mode;
@@ -3002,6 +3089,20 @@ const forms = {
   auth: (f) => onAuth(f),
   withdraw: (f) => withdraw(f),
   pwchange: (f) => changeTempPassword(f),
+  pwrequest: async (f) => {
+    const nick = f.elements.nick.value.trim(), real = f.elements.real.value.trim();
+    if (!nick || !real) return;
+    const btn = f.querySelector('[data-submit]');
+    btn.disabled = true;
+    try {
+      await fb.f.addDoc(fb.f.collection(fb.db, 'pwRequests'), { nick, real, at: Date.now() });
+      closeModal();
+      toast('요청을 보냈어요. 관리자가 초기화하면 000000으로 로그인하세요');
+    } catch (e) {
+      btn.disabled = false;
+      toast('요청을 보내지 못했어요 · ' + friendly(e));
+    }
+  },
   // 할 일 페이지와 홈 카드에서 함께 쓴다 (홈은 data-date 로 오늘)
   todoadd: (f) => {
     const k = f.dataset.date || ui.todoDate, text = f.elements.text.value.trim();
