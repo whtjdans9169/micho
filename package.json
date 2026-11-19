@@ -2,8 +2,8 @@
   "name": "micho",
   "private": true,
   "description": "정림24 건축사 스터디앱. 화면은 빌드 없는 정적 파일, api/ 는 Vercel 서버 기능(비밀번호 초기화)",
-  "engines": { "node": "22.x" },
+  "engines": { "node": ">=18" },
   "dependencies": {
-    "firebase-admin": "14.5.0"
+    "firebase-admin": "13.10.0"
   }
 }
