@@ -606,7 +606,7 @@ async function enter(id) {
   Object.assign(ui, { authError: '', authMode: 'login', view: 'home', paletteFor: null, quote: pickQuote() });
   render();
   loadEveryone(); // 홈 저금통에 쓸 모두의 벌금
-  askRealName();
+  if (!askPasswordChange()) askRealName();
   markVisit();
 }
 
@@ -730,6 +730,8 @@ async function onAuth(form) {
       if (motto) await fs.addDoc(fs.collection(fb.db, 'quotes'), { text: motto, by: nick, uid: user.uid, at: Date.now() });
     } else {
       user = (await a.signInWithEmailAndPassword(auth, email, pw)).user;
+      // 관리자가 초기화해준 비밀번호로 들어왔으면, 바꾸기 전까지 이 기기에서 계속 변경 창을 띄운다
+      if (pw === TEMP_PW) try { localStorage.setItem(MUST_PW_KEY, '1'); } catch {}
     }
     await enter(user.uid);
   } catch (e) {
@@ -2590,6 +2592,57 @@ function realNameModal() {
     </form>`);
 }
 
+// 관리자가 비밀번호를 초기화해준 계정은 로그인하면 새 비밀번호를 정해야 앱을 쓸 수 있다
+const TEMP_PW = '000000';
+const MUST_PW_KEY = 'micho:mustpw';
+function askPasswordChange() {
+  let must = false;
+  try { must = localStorage.getItem(MUST_PW_KEY) === '1'; } catch {}
+  if (!must) return false;
+  ui.mustModal = true; // 비밀번호를 바꿔야만 닫힌다
+  openModal(`
+    <h3 class="text-lg font-bold">새 비밀번호를 정해주세요</h3>
+    <p class="mt-1 text-sm text-gray-500 leading-relaxed">관리자가 비밀번호를 <b>${TEMP_PW}</b>으로 초기화했어요.<br>다른 사람이 알 수 없도록 <b>새 비밀번호로 바꿔야 앱을 쓸 수 있어요.</b></p>
+    <form data-form="pwchange" class="mt-5 space-y-3">
+      <input type="password" name="pw" required minlength="6" autocomplete="new-password" placeholder="새 비밀번호 (6자 이상)" class="${INPUT}">
+      <input type="password" name="pw2" required minlength="6" autocomplete="new-password" placeholder="새 비밀번호 한 번 더" class="${INPUT}">
+      <button data-submit class="btn w-full py-3 rounded-2xl font-semibold disabled:opacity-60">비밀번호 바꾸고 시작하기</button>
+    </form>`);
+  return true;
+}
+
+async function changeTempPassword(form) {
+  const pw = form.elements.pw.value, pw2 = form.elements.pw2.value;
+  if (pw.length < 6) return toast('비밀번호는 6자 이상이어야 해요');
+  if (pw !== pw2) return toast('비밀번호가 서로 달라요');
+  if (pw === TEMP_PW) return toast('초기 비밀번호와 다른 비밀번호로 정해주세요');
+  const btn = form.querySelector('[data-submit]');
+  btn.disabled = true;
+  btn.textContent = '바꾸는 중…';
+  const { a, auth } = fb;
+  const done = (msg) => {
+    try { localStorage.removeItem(MUST_PW_KEY); } catch {}
+    ui.mustModal = false;
+    closeModal();
+    toast(msg);
+    askRealName();
+  };
+  try {
+    const user = auth.currentUser;
+    // 오래 켜둔 로그인은 바로 바꿀 수 없어서, 초기 비밀번호로 한 번 더 확인한다
+    await a.reauthenticateWithCredential(user, a.EmailAuthProvider.credential(user.email, TEMP_PW));
+    await a.updatePassword(user, pw);
+    done('비밀번호를 바꿨어요. 다음부터 새 비밀번호로 로그인하세요');
+  } catch (e) {
+    const wrongPw = ['auth/invalid-credential', 'auth/wrong-password', 'auth/invalid-login-credentials'].includes(e.code);
+    // 이미 다른 기기에서 바꾼 경우: 초기 비밀번호로는 더 확인되지 않으니 창만 닫는다
+    if (wrongPw) return done('이미 비밀번호를 바꿨어요');
+    btn.disabled = false;
+    btn.textContent = '비밀번호 바꾸고 시작하기';
+    toast('바꾸지 못했어요 · ' + friendly(e));
+  }
+}
+
 function profileModal() {
   const u = myProfile();
   openModal(`
@@ -2948,6 +3001,7 @@ const actions = {
 const forms = {
   auth: (f) => onAuth(f),
   withdraw: (f) => withdraw(f),
+  pwchange: (f) => changeTempPassword(f),
   // 할 일 페이지와 홈 카드에서 함께 쓴다 (홈은 data-date 로 오늘)
   todoadd: (f) => {
     const k = f.dataset.date || ui.todoDate, text = f.elements.text.value.trim();
