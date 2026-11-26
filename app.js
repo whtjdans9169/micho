@@ -340,7 +340,7 @@ const ui = {
   statWeek: mondayOf(logicalNow()),
   boardCat: 'all', // 게시판 분류 (all · tip · qna · free)
   postLimit: 30,   // 게시판 글을 한 번에 불러오는 개수
-  teamView: 'all', // 관리자가 고른 팀 보기 (all · JUNG · LIM)
+  teamView: 'all', // 고른 팀 보기 (all · JUNG · LIM). 인증샷 · 벌금 현황은 누구나, 저금통 · 리포트는 관리자만
   feedLimit: FEED_PAGE,
   quote: null,
   paletteFor: null,
@@ -358,7 +358,8 @@ const isBanned = (id) => !!settings.banned?.[id] || !!settings.removed?.[id];
 const activeMembers = () => Object.entries(profiles).filter(([id]) => !isBanned(id));
 
 // ---------- 팀 (관리자가 board/settings.teams 에 배정, 예: { uid: 'JUNG' }) ----------
-// 인증샷 · 벌금 · 저금통은 같은 팀끼리만, 자료 · 멤버 명단 · 오늘의 인증 · 공지 · 명언은 모두에게
+// 저금통 · 주간 리포트는 같은 팀끼리만, 인증샷 · 벌금 현황 · 게시판 · 멤버 명단 · 오늘의 인증 · 공지 · 명언은 모두에게
+// (2026-11-26 인증샷 · 벌금은 두 팀이 서로 볼 수 있게 바꿈. 누구나 [전체 · JUNG팀 · LIM팀]으로 골라 볼 수 있다)
 // 미배정 멤버는 모두를 보고 모두에게 보인다 (팀을 나누기 전에는 지금처럼 다 함께)
 const TEAMS = ['JUNG', 'LIM'];
 const teamOf = (id) => settings.teams?.[id] || '';
@@ -367,6 +368,8 @@ function inMyScope(id) {
   if (isAdmin()) return ui.teamView === 'all' || teamOf(id) === ui.teamView; // 관리자는 골라서 본다
   return !myTeam() || !teamOf(id) || teamOf(id) === myTeam();
 }
+// 인증샷 · 벌금 현황: 모두가 전체를 보고, 위쪽 팀 선택으로 골라 볼 수 있다
+const inTeamView = (id) => ui.teamView === 'all' || teamOf(id) === ui.teamView;
 const teamLabel = (t) => (t ? `${t}팀` : '미배정');
 function teamBadge(id) {
   const t = teamOf(id);
@@ -375,6 +378,12 @@ function teamBadge(id) {
 // 관리자용 팀 보기 선택 (전체 · 정 팀 · 림 팀)
 function teamPicker() {
   if (!isAdmin()) return myTeam() ? `<span class="text-xs text-gray-500">${teamLabel(myTeam())} 기준</span>` : '';
+  return `<div class="glass rounded-full p-0.5 inline-flex text-xs">${[['all', '전체'], ...TEAMS.map((t) => [t, teamLabel(t)])].map(([k, l]) => `
+    <button data-action="teamview" data-team="${k}" class="px-3 py-1 rounded-full font-semibold ${ui.teamView === k ? 'btn' : 'text-gray-600'}">${l}</button>`).join('')}</div>`;
+}
+// 누구나 쓰는 팀 보기 선택 (인증샷 · 벌금 현황). 팀을 아직 나누지 않았으면 숨긴다
+function teamFilter() {
+  if (!Object.keys(settings.teams || {}).length) return '';
   return `<div class="glass rounded-full p-0.5 inline-flex text-xs">${[['all', '전체'], ...TEAMS.map((t) => [t, teamLabel(t)])].map(([k, l]) => `
     <button data-action="teamview" data-team="${k}" class="px-3 py-1 rounded-full font-semibold ${ui.teamView === k ? 'btn' : 'text-gray-600'}">${l}</button>`).join('')}</div>`;
 }
@@ -533,9 +542,10 @@ function exemptList() {
     who: x.all ? '전체' : Object.keys(x.uids || {}).map((u) => profiles[u]?.nick || '탈퇴한 멤버').join(', '),
   }));
 }
-function fineBoard() {
+// shown: 누구를 보여줄지 (기본은 벌금 현황용 = 모두, 저금통은 inMyScope = 같은 팀)
+function fineBoard(shown = inTeamView) {
   if (!allData) return null;
-  return activeMembers().filter(([id]) => inMyScope(id)).map(([id, p]) => {
+  return activeMembers().filter(([id]) => shown(id)).map(([id, p]) => {
     const { missed, base } = fineBase(id);
     const adjust = fineAdjustOf(id);
     return { id, nick: p.nick || '이름 없음', photo: p.photo, missed, edited: !!adjust, amount: Math.max(0, base + adjust) };
@@ -927,7 +937,7 @@ const MENUS = [
 const eulReul = (word) => { const c = word.charCodeAt(word.length - 1) - 0xAC00; return c >= 0 && c <= 11171 && c % 28 ? '을' : '를'; };
 
 function piggyBank() {
-  const rows = fineBoard();
+  const rows = fineBoard(inMyScope);
   const body = (() => {
     if (!rows) return '<p class="mt-2 text-sm text-gray-500"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>불러오는 중…</p>';
     const total = rows.reduce((a, r) => a + r.amount, 0), per = rows.length ? Math.floor(total / rows.length) : 0;
@@ -1171,7 +1181,7 @@ function todayStatus() {
       const ok = done.has(id);
       const pass = !ok && ticketOn(today, id === me ? D : allData?.[id]); // 오늘 패스권 · 학원권을 쓴 멤버
       // 인증한 멤버의 사진을 누르면 오늘 인증샷 보기 (인증샷은 같은 팀 것만)
-      const proof = ok && inMyScope(id) && todayProofs.find((x) => x.uid === id);
+      const proof = ok && todayProofs.find((x) => x.uid === id);
       // 닉네임은 줄이지 않고 전부 보여준다 (칸 너비가 닉네임에 맞춰 늘어나고, 넘치면 다음 줄로)
       return `
       <div class="min-w-[3.5rem] flex flex-col items-center">
@@ -1262,7 +1272,7 @@ function reactWhoModal(p, focus) {
 
 // 모두의 인증샷: 1:1 정사각형, 왼쪽 아래에 올린 사람, 오른쪽 아래에 응원 반응
 function proofFeed() {
-  const shown = proofs.filter((p) => inMyScope(p.uid)); // 같은 팀 것만 (내보낸 멤버의 인증샷도 기록으로 남긴다)
+  const shown = proofs.filter((p) => inTeamView(p.uid)); // 두 팀 모두 (팀 선택으로 골라 보기, 내보낸 멤버의 인증샷도 기록으로 남긴다)
   // 인스타그램처럼 3열 격자. 칸이 작아서 사진 위에는 작은 프로필과 반응 수만, 누르면 크게 보기
   const card = (p) => {
     const who = whoOf(p);
@@ -1280,7 +1290,7 @@ function proofFeed() {
   return `
   <section class="mt-6 lg:mt-8">
     <div class="mb-3 flex items-center justify-between">
-      <h2 class="text-xl font-bold flex items-center gap-2 flex-wrap">📸 인증샷 ${teamPicker()}</h2>
+      <h2 class="text-xl font-bold flex items-center gap-2 flex-wrap">📸 인증샷 ${teamFilter()}</h2>
       <button data-action="go" data-view="todo" class="text-sm font-semibold text-brand">나도 인증하기 <i class="fa-solid fa-chevron-right text-xs"></i></button>
     </div>
     ${shown.length
@@ -1641,7 +1651,7 @@ function weekFineCard() {
     </div>
     <p class="mt-1 text-xs text-gray-500">지난주 벌금을 결산했어요 · <b>${pay.getMonth() + 1}/${pay.getDate()}(월)</b>에 일괄로 걷어요</p>
     <div class="mt-4 grid gap-3 ${groups.length > 1 ? 'sm:grid-cols-2' : ''}">${groups.map((g) => {
-      const visible = g.people.filter((x) => inMyScope(x.id) && x.amount);
+      const visible = g.people.filter((x) => x.amount);
       return `
       <div class="rounded-2xl bg-white/50 p-4">
         <div class="flex items-baseline justify-between gap-2">
@@ -1650,7 +1660,7 @@ function weekFineCard() {
         </div>
         ${visible.length ? `<ul class="mt-2 space-y-1 text-sm">${visible.map((x) => `
           <li class="flex justify-between gap-2"><span class="truncate">${esc(x.nick)}${x.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span><span class="tabular-nums text-gray-600 whitespace-nowrap">${x.missed}일 · ${won(x.amount)}</span></li>`).join('')}
-        </ul>` : `<p class="mt-2 text-xs text-gray-500">${g.total ? '다른 팀의 사람별 금액은 볼 수 없어요' : '지난주에는 벌금이 없었어요 👏'}</p>`}
+        </ul>` : `<p class="mt-2 text-xs text-gray-500">지난주에는 벌금이 없었어요 👏</p>`}
       </div>`;
     }).join('')}
     </div>
@@ -1665,7 +1675,7 @@ function fineCard() {
   return `
   <section class="${CARD} mt-4 lg:mt-6">
     <div class="flex items-center justify-between gap-3">
-      <h2 class="text-lg font-bold flex items-center gap-2 flex-wrap"><span><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</span> ${teamPicker()}</h2>
+      <h2 class="text-lg font-bold flex items-center gap-2 flex-wrap"><span><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</span> ${teamFilter()}</h2>
       ${isAdmin() ? `
       <div class="flex gap-3 shrink-0">
         <button data-action="exempt" class="text-sm text-gray-500"><i class="fa-solid fa-umbrella-beach mr-1"></i>면제일</button>
@@ -1682,7 +1692,7 @@ function fineCard() {
           <span class="w-6 text-center font-bold ${r.amount && i < 3 ? 'text-brand' : 'text-gray-400'}">${i + 1}</span>
           ${avatar(r, 'w-9 h-9 text-sm')}
           <span class="flex-1 min-w-0">
-            <span class="block font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span>
+            <span class="block font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''} ${teamBadge(r.id)}</span>
             ${r.missed && (isAdmin() || r.id === me) ? `<button data-action="finedays" data-id="${r.id}" class="block text-xs text-gray-500 underline decoration-dotted underline-offset-2">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''} 보기</button>` : `<span class="block text-xs text-gray-500">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''}</span>`}
           </span>
           <span class="text-right font-bold tabular-nums whitespace-nowrap">${won(r.amount)}</span>
@@ -2680,9 +2690,9 @@ function fineEditModal(id) {
 
 // 크게 보기에서 좌우로 넘길 목록: 홈 인증샷 · 내 인증샷 · 오늘의 인증 (같은 팀 것만)
 function proofListOf(name) {
-  if (name === 'feed') return proofs.filter((p) => inMyScope(p.uid));
+  if (name === 'feed') return proofs.filter((p) => inTeamView(p.uid));
   if (name === 'mine') return myProofs;
-  if (name === 'today') return todayProofs.filter((p) => inMyScope(p.uid)).sort((a, b) => b.at - a.at);
+  if (name === 'today') return todayProofs.slice().sort((a, b) => b.at - a.at);
   return [];
 }
 function openProof(id, list) {
