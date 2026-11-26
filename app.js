@@ -25,6 +25,8 @@ const DEFAULT_SETTINGS = {
   banned: {},             // 관리자가 내보낸 멤버 { id: 닉네임 }
 };
 const ADMIN_NICK = 'MICHO'; // 관리자 (멤버 내보내기 · 되돌리기)
+// 팀 총무: 관리자와 함께 사람별 벌금(누가 얼마)을 볼 수 있다. 다른 멤버는 팀별 합계와 자기 벌금만
+const TREASURERS = ['변', '건축사따서탈건하자'];
 const BANNED_MSG = '관리자가 이 계정을 내보냈어요. 관리자에게 문의해주세요.';
 const FEED_PAGE = 24; // 홈 인증샷을 한 번에 불러오는 개수
 const DEFAULT_COLORS = ['#D97471', '#8E7CC3', '#EBC04A'];
@@ -352,6 +354,7 @@ const ui = {
 
 const myProfile = () => profiles[me] || { nick: ui.lastNick, goal: '', motto: '', photo: '' };
 const isAdmin = () => myProfile().nick === ADMIN_NICK;
+const canSeeFines = () => isAdmin() || TREASURERS.includes(myProfile().nick);
 // 내보낸 멤버(banned)와 완전 삭제한 멤버(removed)는 들어올 수 없다
 const isBanned = (id) => !!settings.banned?.[id] || !!settings.removed?.[id];
 // 내보낸 멤버를 뺀 명단 (멤버 목록 · 벌금 현황에 쓰임. 인증샷 피드와 오늘 이미 한 인증은 남긴다)
@@ -1651,7 +1654,8 @@ function weekFineCard() {
     </div>
     <p class="mt-1 text-xs text-gray-500">지난주 벌금을 결산했어요 · <b>${pay.getMonth() + 1}/${pay.getDate()}(월)</b>에 일괄로 걷어요</p>
     <div class="mt-4 grid gap-3 ${groups.length > 1 ? 'sm:grid-cols-2' : ''}">${groups.map((g) => {
-      const visible = g.people.filter((x) => x.amount);
+      // 사람별 금액은 총무 · 관리자만, 다른 멤버는 자기 것만
+      const visible = g.people.filter((x) => x.amount && (canSeeFines() || x.id === me));
       return `
       <div class="rounded-2xl bg-white/50 p-4">
         <div class="flex items-baseline justify-between gap-2">
@@ -1660,7 +1664,8 @@ function weekFineCard() {
         </div>
         ${visible.length ? `<ul class="mt-2 space-y-1 text-sm">${visible.map((x) => `
           <li class="flex justify-between gap-2"><span class="truncate">${esc(x.nick)}${x.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''}</span><span class="tabular-nums text-gray-600 whitespace-nowrap">${x.missed}일 · ${won(x.amount)}</span></li>`).join('')}
-        </ul>` : `<p class="mt-2 text-xs text-gray-500">지난주에는 벌금이 없었어요 👏</p>`}
+        </ul>` : ''}
+        ${!g.total ? '<p class="mt-2 text-xs text-gray-500">지난주에는 벌금이 없었어요 👏</p>' : canSeeFines() ? '' : '<p class="mt-2 text-xs text-gray-500"><i class="fa-solid fa-lock mr-1"></i>사람별 금액은 총무 · 관리자만 볼 수 있어요</p>'}
       </div>`;
     }).join('')}
     </div>
@@ -1668,14 +1673,38 @@ function weekFineCard() {
   </section>`;
 }
 
-// 모두에게 보이는 벌금 순위 (공부 시간 같은 통계는 위쪽에 나만 보인다)
+// 총무 · 관리자가 아닌 멤버의 벌금 현황: 팀별 쌓인 벌금 + 내 벌금만
+function fineTeamSummary() {
+  const groups = teamFines() || [], mine = fineBoard((id) => id === me)?.[0];
+  const total = groups.reduce((a, g) => a + g.total, 0);
+  return `
+    <ul class="mt-4 space-y-2">${groups.map((g) => `
+      <li class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-white/40">
+        <span class="font-semibold">${teamLabel(g.team)} <span class="text-xs font-normal text-gray-500">${g.people.length}명</span></span>
+        <span class="font-bold tabular-nums">${won(g.total)}</span>
+      </li>`).join('')}
+    </ul>
+    ${mine ? `
+    <div class="mt-3 flex items-center gap-3 p-2.5 rounded-2xl bg-white/85 shadow-sm">
+      ${avatar(mine, 'w-9 h-9 text-sm')}
+      <span class="flex-1 min-w-0">
+        <span class="block font-medium">내 벌금</span>
+        ${mine.missed ? `<button data-action="finedays" data-id="${me}" class="block text-xs text-gray-500 underline decoration-dotted underline-offset-2">벌금 ${mine.missed}일 보기</button>` : '<span class="block text-xs text-gray-500">벌금 0일 👏</span>'}
+      </span>
+      <span class="font-bold tabular-nums">${won(mine.amount)}</span>
+    </div>` : ''}
+    <p class="mt-3 text-xs text-gray-500"><i class="fa-solid fa-lock mr-1"></i>사람별 금액은 총무 · 관리자만 볼 수 있어요</p>
+    <p class="mt-2 text-right text-sm text-gray-600">총 벌금 <b class="text-brand">${won(total)}</b></p>`;
+}
+
+// 벌금 현황: 총무 · 관리자는 사람별 순위, 다른 멤버는 팀별 합계 + 내 벌금
 function fineCard() {
   const rows = fineBoard();
   const total = rows ? rows.reduce((a, r) => a + r.amount, 0) : 0;
   return `
   <section class="${CARD} mt-4 lg:mt-6">
     <div class="flex items-center justify-between gap-3">
-      <h2 class="text-lg font-bold flex items-center gap-2 flex-wrap"><span><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</span> ${teamFilter()}</h2>
+      <h2 class="text-lg font-bold flex items-center gap-2 flex-wrap"><span><i class="fa-solid fa-coins text-brand mr-1.5"></i>벌금 현황</span> ${canSeeFines() ? teamFilter() : ''}</h2>
       ${isAdmin() ? `
       <div class="flex gap-3 shrink-0">
         <button data-action="exempt" class="text-sm text-gray-500"><i class="fa-solid fa-umbrella-beach mr-1"></i>면제일</button>
@@ -1686,14 +1715,14 @@ function fineCard() {
       할 일을 안 적었거나, 다 끝내지 못했거나, 인증샷이 없는 날마다 ${won(settings.fine)} · ${fmtDateKo(parseKey(settings.fineStart))}부터 · 하루는 새벽 ${DAY_START_H}시에 끝나요 (그 전까지는 전날)
     </p>
     ${exemptList().length ? `<p class="mt-1.5 text-xs text-gray-600"><i class="fa-solid fa-umbrella-beach text-brand mr-1"></i>면제일: ${exemptList().slice(0, 4).map((x) => `${parseKey(x.date).getMonth() + 1}/${parseKey(x.date).getDate()}${x.reason ? ` ${esc(x.reason)}` : ''}${x.who === '전체' ? '' : ` (${esc(x.who)})`}`).join(' · ')}${exemptList().length > 4 ? ' 외' : ''}</p>` : ''}
-    ${rows ? `
+    ${rows && !canSeeFines() ? fineTeamSummary() : rows ? `
       <ol class="mt-4 space-y-2">${rows.map((r, i) => `
         <li class="flex items-center gap-3 p-2.5 rounded-2xl ${r.id === me ? 'bg-white/85 shadow-sm' : 'bg-white/40'}">
           <span class="w-6 text-center font-bold ${r.amount && i < 3 ? 'text-brand' : 'text-gray-400'}">${i + 1}</span>
           ${avatar(r, 'w-9 h-9 text-sm')}
           <span class="flex-1 min-w-0">
             <span class="block font-medium truncate">${esc(r.nick)}${r.id === me ? ' <span class="text-xs text-gray-500">나</span>' : ''} ${teamBadge(r.id)}</span>
-            ${r.missed && (isAdmin() || r.id === me) ? `<button data-action="finedays" data-id="${r.id}" class="block text-xs text-gray-500 underline decoration-dotted underline-offset-2">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''} 보기</button>` : `<span class="block text-xs text-gray-500">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''}</span>`}
+            ${r.missed && (canSeeFines() || r.id === me) ? `<button data-action="finedays" data-id="${r.id}" class="block text-xs text-gray-500 underline decoration-dotted underline-offset-2">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''} 보기</button>` : `<span class="block text-xs text-gray-500">벌금 ${r.missed}일${r.edited ? ' · 수정됨' : ''}</span>`}
           </span>
           <span class="text-right font-bold tabular-nums whitespace-nowrap">${won(r.amount)}</span>
           ${isAdmin() ? `<button data-action="fineedit" data-id="${r.id}" class="w-7 text-gray-400" aria-label="${esc(r.nick)} 벌금 수정"><i class="fa-solid fa-pen text-sm"></i></button>` : ''}
@@ -3004,7 +3033,7 @@ const actions = {
   dday: () => { if (isAdmin()) ddayModal(); },
   finesettings: () => { if (isAdmin()) fineModal(); },
   exempt: () => { if (isAdmin()) exemptModal(); },
-  finedays: (el) => { if (isAdmin() || el.dataset.id === me) fineDaysModal(el.dataset.id); },
+  finedays: (el) => { if (canSeeFines() || el.dataset.id === me) fineDaysModal(el.dataset.id); },
   exemptdel: async (el) => {
     if (!isAdmin() || !confirm(`${fmtDateKo(parseKey(el.dataset.date))} 면제일을 지울까요?`)) return;
     try {
