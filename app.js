@@ -66,7 +66,10 @@ const AUTO_STOP = 10 * 3600000; // 타이머를 켜놓고 잊었을 때 자동�
 const CHECK_AFTER = 3 * 3600000; // 타이머가 이만큼 켜져 있으면 "아직 공부 중이세요?" 하고 묻는다
 // 게시판 첨부 파일: Firebase Storage는 유료라서 파일을 900KB 조각으로 나눠 Firestore에 저장한다
 const CHUNK = 900 * 1024;
-const MAX_FILE = 50 * 1024 * 1024; // 게시판 첨부 파일 하나당
+const MAX_FILE = 10 * 1024 * 1024; // 게시판 첨부 파일 하나당
+// 게시판 사진: 원본 대신 폰 화면에서 깨지지 않을 만큼만 (긴 쪽 1600px, JPEG 72%) → 한 장 보통 200~400KB
+const POST_PHOTO_PX = 1600;
+const POST_PHOTO_Q = 0.72;
 const INPUT = 'field w-full px-4 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-brand/50';
 
 // ============================================================
@@ -141,7 +144,7 @@ function shrinkImage(file, max, ratio = 0) {
 }
 // 저장소(무료 1GB)를 아끼려고 해상도는 두고 JPEG 압축을 높인다 (휴대폰 화면에서는 차이가 거의 없는 정도)
 const QUALITY = 0.6;
-const toJpeg = (canvas) => new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', QUALITY));
+const toJpeg = (canvas, q = QUALITY) => new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', q));
 
 function fmtSize(bytes) {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`;
@@ -2046,7 +2049,7 @@ function postWriteModal(p) {
       ${p ? '<p class="text-xs text-gray-500">첨부한 사진 · 파일은 고칠 수 없어요. 바꾸려면 글을 지우고 새로 올려주세요.</p>' : `
       <label class="block cursor-pointer p-3 rounded-2xl border-2 border-dashed border-gray-300 text-center text-sm text-gray-600">
         <input type="file" multiple data-input="postfiles" class="hidden">
-        <i class="fa-solid fa-paperclip mr-1.5"></i>사진 · 파일 첨부 <span class="text-xs text-gray-500">(하나당 50MB까지 · 최대 ${MAX_ATTACH}개)</span>
+        <i class="fa-solid fa-paperclip mr-1.5"></i>사진 · 파일 첨부 <span class="text-xs text-gray-500">(파일 하나당 10MB까지 · 최대 ${MAX_ATTACH}개 · 사진은 자동으로 최적화)</span>
       </label>
       <ul data-draftfiles class="space-y-1.5">${draftList()}</ul>`}
       <div class="flex gap-2 pt-1">
@@ -3308,7 +3311,7 @@ const forms = {
           // 사진은 줄여서 올리고 목록용 작은 미리보기도 만든다 (브라우저가 못 읽는 사진 · GIF 는 원본 그대로)
           if (type.startsWith('image/') && type !== 'image/gif') {
             try {
-              blob = await toJpeg(await shrinkImage(file, 2400));
+              blob = await toJpeg(await shrinkImage(file, POST_PHOTO_PX), POST_PHOTO_Q);
               thumb = (await shrinkImage(file, 400)).toDataURL('image/jpeg', QUALITY);
               type = 'image/jpeg';
               name = name.replace(/\.[^.]+$/, '') + '.jpg';
@@ -3316,7 +3319,7 @@ const forms = {
               blob = file;
             }
           }
-          if (blob.size > MAX_FILE) { failed.push(`${file.name}(50MB 초과)`); continue; }
+          if (blob.size > MAX_FILE) { failed.push(`${file.name}(10MB 초과)`); continue; }
           attached.push(await uploadFile(blob, { name, type, thumb, by: myProfile().nick, uid: me, at: Date.now(), post: ref.id }, (p) => {
             btn.textContent = `올리는 중 ${i + 1}/${draftFiles.length} · ${Math.round(p * 100)}%`;
           }));
@@ -3539,7 +3542,7 @@ document.addEventListener('change', async (e) => {
     // 사진은 올릴 때 줄이니까 크기 검사는 사진이 아닌 파일만
     const big = picked.filter((x) => !isImage(x) && x.size > MAX_FILE);
     draftFiles = [...draftFiles, ...picked.filter((x) => !big.includes(x))].slice(0, MAX_ATTACH);
-    if (big.length) toast(`50MB가 넘어서 뺐어요: ${big.map((x) => x.name).join(', ')}`);
+    if (big.length) toast(`10MB가 넘어서 뺐어요: ${big.map((x) => x.name).join(', ')}`);
     const ul = $('[data-draftfiles]');
     if (ul) ul.innerHTML = draftList();
   }
