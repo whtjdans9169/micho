@@ -59,7 +59,24 @@ service cloud.firestore {
       allow read: if signedIn();
       allow write: if isAdmin() || (signedIn() && id.matches(request.auth.uid + '_.*'));
     }
-    // 자료: 누구나 올리기, 올린 사람이나 관리자만 지우기
+    // 게시판 글: 누구나 읽고 쓰기, 고치기는 쓴 사람만 (다른 사람은 좋아요 · 댓글 수만), 지우기는 쓴 사람이나 관리자
+    match /posts/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if signedIn() && (
+        resource.data.uid == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'comments']));
+      allow delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      // 댓글: 본인 이름으로만, 지우기는 쓴 사람 · 관리자 (글이 지워진 뒤 남은 댓글은 누구나 정리)
+      match /comments/{c} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+        allow delete: if isAdmin() || (signedIn() && (
+          resource.data.uid == request.auth.uid ||
+          !exists(/databases/$(database)/documents/posts/$(id))));
+      }
+    }
+    // 게시판 첨부 파일 (예전 자료): 누구나 올리기, 올린 사람이나 관리자만 지우기
     match /files/{id} {
       allow read, create: if signedIn();
       allow update, delete: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);

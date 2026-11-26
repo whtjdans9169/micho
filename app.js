@@ -59,14 +59,14 @@ const LEVELS = [
   [0, '#D5F0E0', '#14532D'],
 ];
 
-const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['stats', 'fa-chart-simple', '통계'], ['files', 'fa-folder-open', '자료'], ['me', 'fa-user', '나']];
+const NAV = [['home', 'fa-house', '홈'], ['todo', 'fa-square-check', '할 일'], ['stats', 'fa-chart-simple', '통계'], ['board', 'fa-comments', '게시판'], ['me', 'fa-user', '나']];
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
 const DAY = 86400000;
 const AUTO_STOP = 10 * 3600000; // 타이머를 켜놓고 잊었을 때 자동으로 멈추는 시간
 const CHECK_AFTER = 3 * 3600000; // 타이머가 이만큼 켜져 있으면 "아직 공부 중이세요?" 하고 묻는다
-// 자료: Firebase Storage는 유료라서 파일을 900KB 조각으로 나눠 Firestore에 저장한다
+// 게시판 첨부 파일: Firebase Storage는 유료라서 파일을 900KB 조각으로 나눠 Firestore에 저장한다
 const CHUNK = 900 * 1024;
-const MAX_FILE = 10 * 1024 * 1024;
+const MAX_FILE = 50 * 1024 * 1024; // 게시판 첨부 파일 하나당
 const INPUT = 'field w-full px-4 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-brand/50';
 
 // ============================================================
@@ -204,19 +204,26 @@ async function loadQuotes() {
   return snap.docs.map((d) => d.data()).sort((a, b) => (a.at || 0) - (b.at || 0));
 }
 
-// ---------- 자료 (파일을 조각내서 files/{id}/chunks/{번호} 에 저장) ----------
+// ---------- 첨부 파일 (게시판. 파일을 조각내서 files/{id}/chunks/{번호} 에 저장) ----------
 const chunkRef = (id, i) => fb.f.doc(fb.db, 'files', id, 'chunks', String(i));
 
+// 큰 파일도 빨리 올라가도록 조각을 4개씩 함께 올린다. 글에 붙일 정보를 돌려준다
 async function uploadFile(blob, meta, onProgress) {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const id = fb.f.doc(fb.f.collection(fb.db, 'files')).id;
   const chunks = Math.max(1, Math.ceil(bytes.length / CHUNK));
-  for (let i = 0; i < chunks; i++) {
-    await fb.f.setDoc(chunkRef(id, i), { data: fb.f.Bytes.fromUint8Array(bytes.subarray(i * CHUNK, (i + 1) * CHUNK)) });
-    onProgress((i + 1) / chunks);
-  }
-  // 조각을 다 올린 뒤에 목록에 보이도록 정보는 마지막에 저장
+  let next = 0, done = 0;
+  const worker = async () => {
+    while (next < chunks) {
+      const i = next++;
+      await fb.f.setDoc(chunkRef(id, i), { data: fb.f.Bytes.fromUint8Array(bytes.subarray(i * CHUNK, (i + 1) * CHUNK)) });
+      onProgress(++done / chunks);
+    }
+  };
+  await Promise.all([...Array(Math.min(4, chunks))].map(worker));
+  // 조각을 다 올린 뒤에 정보를 저장
   await fb.f.setDoc(fb.f.doc(fb.db, 'files', id), { ...meta, size: bytes.length, chunks });
+  return { id, name: meta.name, type: meta.type, size: bytes.length, chunks, thumb: meta.thumb || '' };
 }
 async function downloadFile(file) {
   const parts = await Promise.all([...Array(file.chunks)].map((_, i) => fb.f.getDoc(chunkRef(file.id, i))));
@@ -306,8 +313,9 @@ let profiles = {};     // id → { nick, goal, motto, photo }
 let quoteList = [];    // 사용자들이 등록한 명언
 let settings = { ...DEFAULT_SETTINGS }; // 시험일 · 벌금 (모두 공유)
 let notice = null;     // 홈 공지 { text, by, at }
-let files = [];        // 자료 목록 (최신순)
-let pending = [];      // 게시하려고 고른 파일들
+let posts = [];        // 게시판 글 (최신순)
+let postComments = []; // 열어 본 글의 댓글
+let draftFiles = [];   // 글쓰기에서 고른 첨부 파일
 let proofs = [];       // 홈 인증샷 피드 (최신순)
 let myProofs = [];     // 내 인증샷 (최신순)
 let allData = null;    // 벌금 계산용 모두의 기록 (통계 화면을 열 때 불러옴)
@@ -316,6 +324,8 @@ let todayProofs = [];  // 오늘 올라온 인증샷 (오늘의 인증 현황)
 let todayOff = null;   // 오늘 인증샷 구독 해제 (자정이 지나면 새 날짜로 다시 구독)
 let unwatch = [];      // 실시간 구독 해제 함수들
 let feedOff = null;    // 인증샷 피드 구독 해제 (더 보기로 개수가 바뀌면 다시 구독)
+let postsOff = null;   // 게시판 글 구독 해제 (더 보기로 개수가 바뀌면 다시 구독)
+let commentsOff = null; // 열어 본 글의 댓글 구독 해제
 let pwRequests = [];   // 비밀번호 초기화 요청 (관리자에게만 채워짐)
 let today = dkey();
 const ui = {
@@ -325,7 +335,8 @@ const ui = {
   statMonth: monthOf(logicalNow()),
   statDay: today,
   statWeek: mondayOf(logicalNow()),
-  fileFilter: 'all',
+  boardCat: 'all', // 게시판 분류 (all · tip · qna · free)
+  postLimit: 30,   // 게시판 글을 한 번에 불러오는 개수
   teamView: 'all', // 관리자가 고른 팀 보기 (all · JUNG · LIM)
   feedLimit: FEED_PAGE,
   quote: null,
@@ -583,10 +594,6 @@ async function enter(id) {
       if (isBanned(me)) return kickedOut(); // 쓰는 중에 내보내지면 바로 로그아웃
       refreshView();
     }, ignore),
-    f.onSnapshot(f.collection(fb.db, 'files'), (snap) => {
-      files = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at);
-      refreshView();
-    }, ignore),
     f.onSnapshot(f.query(f.collection(fb.db, 'proofs'), f.where('uid', '==', id)), (snap) => {
       myProofs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.at - a.at);
       // 내 인증 날짜 기록을 실제 인증샷과 맞춘다 (예전에 올린 것 채우기 · 관리자가 지운 것 빼기)
@@ -612,6 +619,9 @@ async function enter(id) {
   ui.feedLimit = FEED_PAGE;
   watchFeed();
   watchToday();
+  ui.postLimit = 30;
+  watchPosts();
+  if (isAdmin()) clearOldFiles();
   Object.assign(ui, { authError: '', authMode: 'login', view: 'home', paletteFor: null, quote: pickQuote() });
   render();
   loadEveryone(); // 홈 저금통에 쓸 모두의 벌금
@@ -704,6 +714,10 @@ function stopWatching() {
   feedOff = null;
   todayOff?.();
   todayOff = null;
+  postsOff?.();
+  postsOff = null;
+  commentsOff?.();
+  commentsOff = null;
 }
 // 실시간 변경이 들어오면 화면을 다시 그린다 (입력 중이거나 창이 열려 있으면 나중에)
 function refreshView() {
@@ -770,7 +784,7 @@ function render() {
   else if (!ready) app.innerHTML = loadingView();
   else if (!me) app.innerHTML = loginView();
   else {
-    const views = { home: homeView, todo: todoView, stats: statsView, files: filesView, me: profileView };
+    const views = { home: homeView, todo: todoView, stats: statsView, board: boardView, me: profileView };
     app.innerHTML = `
       ${navView()}
       <main class="md:pl-64">
@@ -1847,46 +1861,233 @@ function fileIcon(f) {
   return 'fa-file';
 }
 
-function filesView() {
-  const shown = files.filter((f) => ui.fileFilter === 'all' || (ui.fileFilter === 'photo') === isImage(f));
-  const tabs = [['all', '전체'], ['photo', '사진'], ['doc', '파일']].map(([k, l]) => `
-    <button data-action="filefilter" data-mode="${k}" class="px-5 py-2 rounded-full text-sm font-semibold transition ${ui.fileFilter === k ? 'btn' : 'text-gray-600'}">${l}</button>`).join('');
-  const upload = `
-    <label class="btn px-4 py-2.5 rounded-full text-sm font-semibold cursor-pointer whitespace-nowrap">
-      <i class="fa-solid fa-arrow-up-from-bracket mr-1.5"></i>올리기
-      <input type="file" multiple data-input="files" class="hidden">
-    </label>`;
-  return `
-    ${pageTitle('자료', upload)}
-    <div class="glass rounded-full p-1 inline-flex mb-4">${tabs}</div>
-    ${shown.length
-      ? `<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">${shown.map(fileCard).join('')}</div>`
-      : `<div class="glass rounded-3xl p-10 text-center text-gray-500">
-           <i class="fa-regular fa-folder-open text-4xl text-brand"></i>
-           <p class="mt-3">아직 올라온 자료가 없어요.<br>시험 자료나 사진을 올려 스터디원들과 나눠보세요.</p>
-         </div>`}`;
-}
-
-function fileCard(f) {
-  return `
-  <button data-action="openfile" data-id="${f.id}" class="glass rounded-3xl p-2 text-left flex flex-col min-w-0">
-    <div class="relative w-full aspect-square rounded-2xl overflow-hidden grid place-items-center bg-white/60">
-      ${f.thumb
-        ? `<img src="${f.thumb}" alt="" loading="lazy" class="absolute inset-0 w-full h-full object-contain">` // 사진 전체가 보이게 (자르지 않음)
-        : `<i class="fa-solid ${fileIcon(f)} text-4xl text-brand"></i>`}
-    </div>
-    <div class="w-full min-w-0 px-1.5 pt-2 pb-1">
-      <p class="text-sm font-semibold truncate">${esc(f.caption || f.name)}</p>
-      ${f.caption ? `<p class="text-xs text-gray-600 truncate">${esc(f.name)}</p>` : ''}
-      <p class="text-xs text-gray-500 truncate">${esc(f.by)} · ${fmtWhen(f.at)}</p>
-    </div>
-  </button>`;
-}
-
 // 파일 조각을 합친 결과는 다시 받지 않도록 기억해둔다
 const blobUrls = {};
 async function fileUrl(f) {
   return (blobUrls[f.id] ||= URL.createObjectURL(await downloadFile(f)));
+}
+
+// ---------- 게시판 (꿀팁 · 질문 · 자유. 모두 함께 봐요) ----------
+// posts/{id}: { uid, nick, cat, title, body, at, editedAt, files: [{ id, name, type, size, chunks, thumb }], likes: { uid: true }, comments: 개수 }
+// posts/{id}/comments/{cid}: { uid, nick, text, at }
+// 첨부 파일 내용은 files/{id} (+chunks) 에 조각으로 저장하고, 정보만 글에 붙인다
+const CATS = [['tip', '💡', '꿀팁'], ['qna', '❓', '질문'], ['free', '💬', '자유']];
+const catOf = (k) => CATS.find((c) => c[0] === k) || CATS[2];
+const MAX_ATTACH = 10; // 글 하나에 붙일 수 있는 파일 수
+function fmtAgo(ts) {
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if (m < 1) return '방금';
+  if (m < 60) return `${m}분 전`;
+  if (m < 1440) return `${Math.floor(m / 60)}시간 전`;
+  if (m < 10080) return `${Math.floor(m / 1440)}일 전`;
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+const findPost = (id) => posts.find((p) => p.id === id);
+
+function watchPosts() {
+  postsOff?.();
+  const { f } = fb;
+  postsOff = f.onSnapshot(f.query(f.collection(fb.db, 'posts'), f.orderBy('at', 'desc'), f.limit(ui.postLimit)), (snap) => {
+    posts = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // 열어 둔 글은 좋아요만 바꿔 끼운다 (쓰던 댓글이 지워지지 않게)
+    const open = ui.openPost && findPost(ui.openPost), bar = $('[data-postlikes]');
+    if (open && bar) bar.innerHTML = postLikeBar(open);
+    refreshView();
+  }, () => {});
+}
+
+function boardView() {
+  const shown = posts.filter((p) => ui.boardCat === 'all' || p.cat === ui.boardCat);
+  const tabs = [['all', '전체'], ...CATS.map(([k, e, l]) => [k, `${e} ${l}`])].map(([k, l]) => `
+    <button data-action="boardcat" data-cat="${k}" class="px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition ${ui.boardCat === k ? 'btn' : 'text-gray-600'}">${l}</button>`).join('');
+  return `
+  <div class="mx-auto max-w-3xl">
+    ${pageTitle('게시판', '<button data-action="postwrite" class="btn px-4 py-2.5 rounded-full text-sm font-semibold whitespace-nowrap"><i class="fa-solid fa-pen mr-1.5"></i>글쓰기</button>')}
+    <div class="glass rounded-full p-1 flex mb-4 overflow-x-auto no-scrollbar">${tabs}</div>
+    ${shown.length
+      ? `<div class="space-y-3">${shown.map(postCard).join('')}</div>`
+      : `<div class="glass rounded-3xl p-10 text-center text-gray-500">
+           <i class="fa-regular fa-comments text-4xl text-brand"></i>
+           <p class="mt-3">아직 글이 없어요.<br>공부 꿀팁이나 궁금한 걸 처음으로 올려보세요!</p>
+         </div>`}
+    ${posts.length >= ui.postLimit ? '<button data-action="postmore" class="glass mt-4 w-full py-3 rounded-2xl text-gray-600">더 보기</button>' : ''}
+  </div>`;
+}
+
+function postCard(p) {
+  const [, emoji, label] = catOf(p.cat), files = p.files || [];
+  const thumb = files.find((x) => x.thumb)?.thumb;
+  const likes = Object.keys(p.likes || {}).length, liked = !!p.likes?.[me];
+  return `
+  <button data-action="openpost" data-id="${p.id}" class="glass w-full rounded-3xl p-4 text-left flex gap-3">
+    <div class="flex-1 min-w-0">
+      <span class="inline-block px-2 py-0.5 rounded-full bg-white/70 text-xs font-semibold">${emoji} ${label}</span>
+      <h3 class="mt-1.5 font-bold truncate">${esc(p.title)}</h3>
+      ${p.body ? `<p class="mt-0.5 text-sm text-gray-600 line-clamp-2 break-words">${esc(p.body)}</p>` : ''}
+      <div class="mt-2 flex items-center gap-2 text-xs text-gray-500 flex-wrap">
+        ${avatar(whoOf(p), 'w-5 h-5 text-[9px]')}<span class="font-medium text-gray-700">${esc(whoOf(p).nick)}</span><span>· ${fmtAgo(p.at)}</span>
+        <span class="ml-auto flex items-center gap-2.5">
+          <span class="${liked ? 'text-red-500' : ''}"><i class="fa-${liked ? 'solid' : 'regular'} fa-heart mr-0.5"></i>${likes}</span>
+          <span><i class="fa-regular fa-comment mr-0.5"></i>${p.comments || 0}</span>
+          ${files.length ? `<span><i class="fa-solid fa-paperclip mr-0.5"></i>${files.length}</span>` : ''}
+        </span>
+      </div>
+    </div>
+    ${thumb ? `<img src="${thumb}" alt="" loading="lazy" class="w-20 h-20 shrink-0 self-center rounded-2xl object-cover">` : ''}
+  </button>`;
+}
+
+function postLikeBar(p) {
+  const ids = Object.keys(p.likes || {}), mine = !!p.likes?.[me];
+  const names = ids.map((id) => profiles[id]?.nick).filter(Boolean);
+  return `
+    <button data-action="postlike" data-id="${p.id}" class="px-4 py-2 rounded-full text-sm font-semibold ${mine ? 'bg-red-500 text-white' : 'bg-white/70'}"><i class="fa-${mine ? 'solid' : 'regular'} fa-heart mr-1.5"></i>좋아요 ${ids.length}</button>
+    ${names.length ? `<span class="text-xs text-gray-500 min-w-0">${names.slice(0, 3).map(esc).join(', ')}${names.length > 3 ? ` 외 ${names.length - 3}명` : ''} 님이 좋아해요</span>` : ''}`;
+}
+
+function postModal(p) {
+  const [, emoji, label] = catOf(p.cat), files = p.files || [], who = whoOf(p);
+  const images = files.filter(isImage), docs = files.filter((x) => !isImage(x));
+  const canEdit = p.uid === me, canDel = p.uid === me || isAdmin();
+  ui.openPost = p.id;
+  openModal(`
+    <div class="flex items-center justify-between gap-3">
+      <span class="px-2.5 py-1 rounded-full bg-white/70 text-xs font-semibold">${emoji} ${label}</span>
+      <button data-action="closemodal" class="w-8 h-8 shrink-0 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <h3 class="mt-3 text-xl font-bold break-words">${esc(p.title)}</h3>
+    <div class="mt-2 flex items-center gap-2 text-sm">
+      ${avatar(who, 'w-7 h-7 text-xs')}<span class="font-semibold">${esc(who.nick)}</span>
+      <span class="text-xs text-gray-500">${fmtWhen(p.at)}${p.editedAt ? ' · 수정됨' : ''}</span>
+    </div>
+    ${p.body ? `<p class="mt-4 whitespace-pre-line break-words leading-relaxed">${esc(p.body)}</p>` : ''}
+    ${images.length ? `<div class="mt-4 space-y-2">${images.map((x) => `
+      <div class="relative rounded-2xl overflow-hidden bg-white/40">
+        <img data-fimg="${x.id}" src="${x.thumb || ''}" alt="" class="w-full max-h-[70vh] object-contain">
+        <button data-action="postfile" data-post="${p.id}" data-fid="${x.id}" class="absolute right-2 bottom-2 w-9 h-9 rounded-full bg-black/45 text-white grid place-items-center" aria-label="사진 저장"><i class="fa-solid fa-download text-sm"></i></button>
+      </div>`).join('')}</div>` : ''}
+    ${docs.length ? `<ul class="mt-4 space-y-2">${docs.map((x) => `
+      <li><button data-action="postfile" data-post="${p.id}" data-fid="${x.id}" class="w-full flex items-center gap-3 p-3 rounded-2xl bg-white/60 text-left text-sm">
+        <i class="fa-solid ${fileIcon(x)} text-xl text-brand w-6 text-center"></i>
+        <span class="flex-1 min-w-0 truncate font-medium">${esc(x.name)}</span>
+        <span class="text-xs text-gray-500 whitespace-nowrap">${fmtSize(x.size)}</span>
+        <i class="fa-solid fa-download text-gray-400"></i>
+      </button></li>`).join('')}</ul>` : ''}
+    <div data-postlikes class="mt-4 flex items-center gap-3 flex-wrap">${postLikeBar(p)}</div>
+    ${canDel ? `<div class="mt-3 flex gap-2 text-sm">
+      ${canEdit ? `<button data-action="postedit" data-id="${p.id}" class="px-3 py-1.5 rounded-full bg-white/70 text-gray-600"><i class="fa-solid fa-pen mr-1"></i>고치기</button>` : ''}
+      <button data-action="postdel" data-id="${p.id}" class="px-3 py-1.5 rounded-full bg-white/70 text-red-500"><i class="fa-regular fa-trash-can mr-1"></i>삭제${canEdit ? '' : ' (관리자)'}</button>
+    </div>` : ''}
+    <section class="mt-6 pt-4 border-t border-white/80">
+      <h4 class="font-bold">${p.cat === 'qna' ? '답변' : '댓글'}</h4>
+      <ul data-comments class="mt-3 space-y-3"><li class="text-sm text-gray-500"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>불러오는 중…</li></ul>
+      <form data-form="comment" data-id="${p.id}" class="mt-4 flex gap-2 items-end">
+        <textarea name="text" rows="1" required maxlength="1000" placeholder="${p.cat === 'qna' ? '답변을 남겨주세요' : '댓글을 남겨주세요'}" class="${INPUT} !py-2.5 flex-1 min-w-0 resize-none"></textarea>
+        <button data-submit class="btn px-4 py-2.5 rounded-2xl font-semibold whitespace-nowrap">등록</button>
+      </form>
+    </section>`, true);
+  // 사진은 작은 미리보기를 먼저 보여주고, 원본을 받으면 바꾼다
+  for (const x of images) {
+    fileUrl(x).then((url) => { const img = $(`[data-fimg="${x.id}"]`); if (img) img.src = url; }).catch(() => {});
+  }
+  watchComments(p);
+}
+
+function watchComments(p) {
+  commentsOff?.();
+  postComments = [];
+  const { f } = fb;
+  commentsOff = f.onSnapshot(f.query(f.collection(fb.db, 'posts', p.id, 'comments'), f.orderBy('at')), (snap) => {
+    postComments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const ul = $('[data-comments]');
+    if (ul && ui.openPost === p.id) ul.innerHTML = commentsHtml(findPost(p.id) || p);
+  }, () => {});
+}
+function commentsHtml(p) {
+  if (!postComments.length) return `<li class="text-sm text-gray-500">${p.cat === 'qna' ? '아직 답변이 없어요. 아는 분은 알려주세요!' : '첫 댓글을 남겨보세요'}</li>`;
+  return postComments.map((c) => {
+    const who = profiles[c.uid] || { nick: c.nick };
+    return `
+    <li class="flex gap-2.5">
+      ${avatar(who, 'w-8 h-8 text-xs')}
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-1.5 text-sm">
+          <span class="font-semibold truncate">${esc(who.nick)}</span>
+          ${c.uid === p.uid ? '<span class="px-1.5 rounded-md bg-white/80 text-[10px] font-bold text-brand">글쓴이</span>' : ''}
+          <span class="text-xs text-gray-500 whitespace-nowrap">${fmtAgo(c.at)}</span>
+          ${c.uid === me || isAdmin() ? `<button data-action="commentdel" data-post="${p.id}" data-id="${c.id}" class="ml-auto w-7 text-gray-400 hover:text-red-500" aria-label="댓글 삭제"><i class="fa-regular fa-trash-can text-xs"></i></button>` : ''}
+        </div>
+        <p class="mt-0.5 text-sm whitespace-pre-line break-words">${esc(c.text)}</p>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+// 글쓰기 · 고치기 (고칠 때는 분류 · 제목 · 내용만)
+function postWriteModal(p) {
+  ui.editPost = p?.id || null;
+  if (!p) draftFiles = [];
+  const cat = p?.cat || (ui.boardCat !== 'all' ? ui.boardCat : 'tip');
+  openModal(`
+    <div class="flex items-center justify-between">
+      <h3 class="text-lg font-bold">${p ? '글 고치기' : '글쓰기'}</h3>
+      <button data-action="closemodal" class="w-8 h-8 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <form data-form="post" class="mt-4 space-y-3">
+      <div class="flex gap-2">${CATS.map(([k, e, l]) => `
+        <label class="flex-1 cursor-pointer">
+          <input type="radio" name="cat" value="${k}" ${k === cat ? 'checked' : ''} class="peer hidden">
+          <span class="block py-2 rounded-2xl text-center text-sm font-semibold bg-white/60 text-gray-600 peer-checked:bg-brand peer-checked:text-white">${e} ${l}</span>
+        </label>`).join('')}
+      </div>
+      <input name="title" required maxlength="80" autocomplete="off" value="${esc(p?.title)}" placeholder="제목" class="${INPUT}">
+      <textarea name="body" rows="7" maxlength="5000" placeholder="내용을 적어주세요 (공부 꿀팁, 궁금한 점, 이야기 등)" class="${INPUT} resize-none">${esc(p?.body)}</textarea>
+      ${p ? '<p class="text-xs text-gray-500">첨부한 사진 · 파일은 고칠 수 없어요. 바꾸려면 글을 지우고 새로 올려주세요.</p>' : `
+      <label class="block cursor-pointer p-3 rounded-2xl border-2 border-dashed border-gray-300 text-center text-sm text-gray-600">
+        <input type="file" multiple data-input="postfiles" class="hidden">
+        <i class="fa-solid fa-paperclip mr-1.5"></i>사진 · 파일 첨부 <span class="text-xs text-gray-500">(하나당 50MB까지 · 최대 ${MAX_ATTACH}개)</span>
+      </label>
+      <ul data-draftfiles class="space-y-1.5">${draftList()}</ul>`}
+      <div class="flex gap-2 pt-1">
+        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
+        <button data-submit class="btn flex-1 py-3 rounded-2xl font-semibold disabled:opacity-60">${p ? '저장' : '올리기'}</button>
+      </div>
+    </form>`);
+}
+function draftList() {
+  return draftFiles.map((f, i) => `
+    <li class="flex items-center gap-2.5 p-2 rounded-xl bg-white/60 text-sm">
+      <i class="fa-solid ${fileIcon(f)} text-brand w-5 text-center"></i>
+      <span class="flex-1 min-w-0 truncate">${esc(f.name)}</span>
+      <span class="text-xs text-gray-500 whitespace-nowrap">${fmtSize(f.size)}</span>
+      <button type="button" data-action="draftdel" data-i="${i}" class="w-6 text-gray-400" aria-label="빼기"><i class="fa-solid fa-xmark"></i></button>
+    </li>`).join('');
+}
+
+async function deletePost(p) {
+  const { f, db } = fb;
+  await f.deleteDoc(docRef('posts', p.id));
+  // 글을 먼저 지운 뒤 댓글 · 첨부 파일 정리 (보안 규칙: 글이 없어진 댓글은 누구나 지울 수 있다)
+  const cs = await f.getDocs(f.collection(db, 'posts', p.id, 'comments'));
+  await Promise.all([
+    ...cs.docs.map((d) => f.deleteDoc(d.ref)),
+    ...(p.files || []).map((x) => deleteFile(x).catch(() => {})),
+  ]);
+}
+
+// 예전 [자료] 메뉴에 올렸던 파일(글에 붙지 않은 파일)은 관리자가 들어올 때 한 번 지운다
+async function clearOldFiles() {
+  if (settings.oldFilesCleared) return;
+  try {
+    const snap = await fb.f.getDocs(fb.f.collection(fb.db, 'files'));
+    const old = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => !x.post);
+    for (const x of old) await deleteFile(x);
+    await fb.f.setDoc(docRef('board', 'settings'), { oldFilesCleared: true }, { merge: true });
+    if (old.length) toast(`예전 자료 메뉴의 파일 ${old.length}개를 지웠어요`);
+  } catch (e) {
+    console.warn('예전 자료를 지우지 못했어요', e);
+  }
 }
 
 // ---------- 나 (프로필 · 등급) ----------
@@ -2130,7 +2331,7 @@ function profileView() {
     ${isAdmin() ? `
     <section class="${CARD}">
       <h3 class="font-semibold"><i class="fa-solid fa-shield-halved mr-1.5 text-gray-500"></i>관리자 도구</h3>
-      <p class="mt-1 text-xs text-gray-500 leading-relaxed">멤버 · 실명 · 기록 · 할 일 · 명언 · 공지 · 설정 · 인증샷(원본 사진 포함) · 자료 파일까지 전부 파일 하나로 받아요. 받으면서 저장 공간도 알려줘요.</p>
+      <p class="mt-1 text-xs text-gray-500 leading-relaxed">멤버 · 실명 · 기록 · 할 일 · 명언 · 공지 · 설정 · 인증샷(원본 사진 포함) · 게시판 글 · 댓글 · 첨부 파일까지 전부 파일 하나로 받아요. 받으면서 저장 공간도 알려줘요.</p>
       ${pwRequestList()}
       <button data-action="backup" class="btn mt-3 w-full py-3 rounded-2xl font-semibold"><i class="fa-solid fa-download mr-1.5"></i>전체 백업 받기</button>
       <button data-action="usage" class="mt-2 w-full py-3 rounded-2xl bg-white/70 text-gray-600 font-semibold"><i class="fa-solid fa-database mr-1.5"></i>저장 공간만 확인</button>
@@ -2167,7 +2368,7 @@ function withdrawModal() {
     <h3 class="text-lg font-bold text-red-500">탈퇴하기</h3>
     <p class="mt-2 text-sm text-gray-600 leading-relaxed">
       탈퇴하면 <b>프로필 · 공부 기록 · 할 일 · 인증샷 · 내 명언</b>과 로그인 계정이 모두 지워지고 되돌릴 수 없어요.
-      자료 메뉴에 올린 파일은 다른 멤버들을 위해 남아요.
+      게시판에 올린 글은 다른 멤버들을 위해 남아요.
     </p>
     <form data-form="withdraw" class="mt-4 space-y-3">
       <label class="block"><span class="text-sm font-medium text-gray-600">확인을 위해 비밀번호를 입력해주세요</span>
@@ -2190,7 +2391,7 @@ async function scanAll(onStep) {
   const { f, db } = fb;
   const out = { app: '동기들과스터디', exportedAt: new Date().toISOString() };
   const usage = { proofs: 0, files: 0, records: 0, biggest: { id: '', bytes: 0 } };
-  for (const col of ['users', 'realnames', 'data', 'quotes', 'board', 'files', 'proofs', 'proofPhotos']) {
+  for (const col of ['users', 'realnames', 'data', 'quotes', 'board', 'files', 'proofs', 'proofPhotos', 'posts']) {
     onStep(col);
     // board 는 보안 규칙이 문서별(settings · notice)로만 열려 있어서 목록 대신 하나씩 읽는다
     const docs = col === 'board'
@@ -2206,11 +2407,18 @@ async function scanAll(onStep) {
       if (col === 'data' && bytes > usage.biggest.bytes) usage.biggest = { id: d.id, bytes };
     }
   }
-  // 자료 파일 내용 (조각을 하나씩)
+  // 게시판 댓글 (글마다)
+  out.comments = {};
+  for (const id of Object.keys(out.posts)) {
+    onStep('댓글');
+    const cs = await f.getDocs(f.collection(db, 'posts', id, 'comments'));
+    out.comments[id] = Object.fromEntries(cs.docs.map((d) => { usage.records += docBytes(d.data()); return [d.id, d.data()]; }));
+  }
+  // 첨부 파일 내용 (조각을 하나씩)
   out.fileChunks = {};
   const list = Object.entries(out.files);
   for (const [i, [id, file]] of list.entries()) {
-    onStep(`자료 ${i + 1}/${list.length}`);
+    onStep(`첨부 파일 ${i + 1}/${list.length}`);
     const parts = await Promise.all([...Array(file.chunks || 0)].map((_, n) => f.getDoc(f.doc(db, 'files', id, 'chunks', String(n)))));
     out.fileChunks[id] = parts.map((p) => {
       const b = p.data()?.data;
@@ -2233,7 +2441,7 @@ function usageModal(u, saved) {
     ${saved ? '<p class="mt-1 text-sm text-brand font-semibold"><i class="fa-solid fa-circle-check mr-1"></i>백업 파일을 받았어요</p>' : ''}
     <div class="mt-4 text-3xl font-bold tabular-nums">${pct < 1 ? pct.toFixed(1) : Math.round(pct)}% <span class="text-base font-medium text-gray-500">약 ${mb(u.total)} / 1GB</span></div>
     <div class="mt-2 h-2.5 rounded-full bg-white/70 overflow-hidden"><div class="btn h-full rounded-full" style="width:${Math.max(1, Math.min(100, pct))}%"></div></div>
-    <ul class="mt-4 space-y-1.5 text-sm">${row('인증샷 사진', u.proofs)}${row('자료 파일', u.files)}${row('기록 · 프로필 · 설정', u.records)}</ul>
+    <ul class="mt-4 space-y-1.5 text-sm">${row('인증샷 사진', u.proofs)}${row('게시판 첨부 파일', u.files)}${row('기록 · 프로필 · 설정', u.records)}</ul>
     <p class="mt-4 text-xs text-gray-500 leading-relaxed">가장 큰 개인 기록: ${esc(profiles[u.biggest.id]?.nick || '-')} ${mb(u.biggest.bytes)} (한 사람 기록은 최대 1MB · ${Math.round((u.biggest.bytes / DOC_LIMIT) * 100)}%)<br>Firebase가 실제로 계산하는 값은 색인 때문에 이보다 조금 더 클 수 있어요.</p>`);
 }
 async function backup(save) {
@@ -2321,6 +2529,10 @@ function closeModal() {
   ui.openProof = null;
   ui.proofFull = false;
   ui.ddayModal = false;
+  ui.openPost = null;
+  ui.editPost = null;
+  commentsOff?.();
+  commentsOff = null;
   render();
 }
 
@@ -2617,51 +2829,6 @@ function noticeModal() {
     </form>`);
 }
 
-function uploadModal() {
-  openModal(`
-    <h3 class="text-lg font-bold">자료 올리기</h3>
-    <ul class="mt-4 space-y-2 max-h-48 overflow-y-auto">${pending.map((f) => `
-      <li class="flex items-center gap-3 p-2.5 rounded-xl bg-white/60 text-sm">
-        <i class="fa-solid ${fileIcon(f)} text-brand w-5 text-center"></i>
-        <span class="flex-1 truncate">${esc(f.name)}</span>
-        <span class="text-gray-500">${fmtSize(f.size)}</span>
-      </li>`).join('')}
-    </ul>
-    <form data-form="upload" class="mt-4 space-y-3">
-      <textarea name="caption" rows="2" maxlength="200" placeholder="설명 (선택) · 예) 대지계획 기출 풀이" class="${INPUT} resize-none"></textarea>
-      <p class="text-xs text-gray-500">사진은 자동으로 줄여서 올려요 · 파일 하나당 최대 10MB</p>
-      <div class="flex gap-2">
-        <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
-        <button data-submit class="btn flex-1 py-3 rounded-2xl font-semibold">게시</button>
-      </div>
-    </form>`);
-}
-
-function fileModal(f) {
-  openModal(`
-    <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <h3 class="text-lg font-bold break-words">${esc(f.caption || f.name)}</h3>
-        <p class="mt-1 text-xs text-gray-500 break-all">${esc(f.by)} · ${fmtWhen(f.at)} · ${esc(f.name)} · ${fmtSize(f.size)}</p>
-      </div>
-      <button data-action="closemodal" class="w-8 h-8 shrink-0 text-gray-500" aria-label="닫기"><i class="fa-solid fa-xmark text-lg"></i></button>
-    </div>
-    ${isImage(f) && f.thumb
-      ? `<div id="preview" class="mt-4 rounded-2xl overflow-hidden bg-white/60"><img src="${f.thumb}" alt="" class="w-full max-h-[60vh] object-contain blur-sm"></div>`
-      : `<div class="mt-4 rounded-2xl bg-white/60 py-12 grid place-items-center"><i class="fa-solid ${fileIcon(f)} text-5xl text-brand"></i></div>`}
-    <div class="mt-4 flex gap-2">
-      ${f.uid === me || isAdmin() ? `<button data-action="filedel" data-id="${f.id}" class="px-5 py-3 rounded-2xl bg-white/70 text-red-500" aria-label="삭제"><i class="fa-regular fa-trash-can"></i></button>` : ''}
-      <button data-action="filesave" data-id="${f.id}" class="btn flex-1 py-3 rounded-2xl font-semibold"><i class="fa-solid fa-download mr-1.5"></i>저장</button>
-    </div>`, true);
-  // 사진이면 흐린 미리보기를 먼저 보여주고, 원본을 받으면 바꾼다
-  if (isImage(f) && f.thumb) {
-    fileUrl(f).then((url) => {
-      const img = $('#preview img');
-      if (img) { img.src = url; img.classList.remove('blur-sm'); }
-    }).catch((e) => toast('사진을 불러오지 못했어요 · ' + friendly(e)));
-  }
-}
-
 function realNameModal() {
   ui.mustModal = true; // 실명을 적어야만 닫힌다 (모든 멤버)
   openModal(`
@@ -2871,7 +3038,7 @@ const actions = {
   // 내보낸 멤버의 데이터를 모두 지우고, 다시 들어오지 못하게 removed 에 남긴다 (자료 파일은 남김)
   purge: async (el) => {
     const id = el.dataset.id, nick = settings.banned?.[id] || '';
-    if (!isAdmin() || !confirm(`'${nick}' 님의 프로필 · 실명 · 공부 기록 · 인증샷 · 명언을 모두 지울까요?\n되돌릴 수 없어요. (자료 메뉴의 파일은 남아요)`)) return;
+    if (!isAdmin() || !confirm(`'${nick}' 님의 프로필 · 실명 · 공부 기록 · 인증샷 · 명언을 모두 지울까요?\n되돌릴 수 없어요. (게시판 글은 남아요)`)) return;
     el.disabled = true;
     el.textContent = '지우는 중…';
     const { f, db } = fb;
@@ -2954,27 +3121,60 @@ const actions = {
     try { await fb.f.deleteDoc(docRef('board', 'notice')); closeModal(); } catch (e) { toast('공지를 내리지 못했어요 · ' + friendly(e)); }
   },
 
-  filefilter: (el) => { ui.fileFilter = el.dataset.mode; render(); },
-  openfile: (el) => fileModal(files.find((x) => x.id === el.dataset.id)),
-  filesave: async (el) => {
-    const f = files.find((x) => x.id === el.dataset.id);
+
+
+  // 게시판
+  boardcat: (el) => { ui.boardCat = el.dataset.cat; render(); },
+  postmore: () => { ui.postLimit += 30; watchPosts(); },
+  postwrite: () => postWriteModal(),
+  openpost: (el) => { const p = findPost(el.dataset.id); if (p) postModal(p); },
+  postedit: (el) => { const p = findPost(el.dataset.id); if (p?.uid === me) postWriteModal(p); },
+  postdel: async (el) => {
+    const p = findPost(el.dataset.id);
+    if (!p || !(p.uid === me || isAdmin())) return;
+    if (!confirm(`'${p.title}' 글을 지울까요?\n댓글과 첨부 파일도 함께 지워져요.`)) return;
+    try { await deletePost(p); closeModal(); toast('글을 지웠어요'); } catch (e) { toast('지우지 못했어요 · ' + friendly(e)); }
+  },
+  postlike: async (el) => {
+    const p = findPost(el.dataset.id);
+    if (!p) return;
+    const on = !!p.likes?.[me];
+    // 먼저 화면에 반영하고 저장
+    const likes = { ...(p.likes || {}) };
+    on ? delete likes[me] : (likes[me] = true);
+    p.likes = likes;
+    const bar = $('[data-postlikes]');
+    if (bar) bar.innerHTML = postLikeBar(p);
+    try {
+      await fb.f.updateDoc(docRef('posts', p.id), new fb.f.FieldPath('likes', me), on ? fb.f.deleteField() : true);
+    } catch (e) { toast('좋아요를 남기지 못했어요 · ' + friendly(e)); }
+  },
+  postfile: async (el) => {
+    const x = (findPost(el.dataset.post)?.files || []).find((y) => y.id === el.dataset.fid);
+    if (!x) return;
+    const html = el.innerHTML;
     el.disabled = true;
-    el.textContent = '불러오는 중…';
+    el.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
     try {
       const a = document.createElement('a');
-      a.href = await fileUrl(f);
-      a.download = f.name;
+      a.href = await fileUrl(x);
+      a.download = x.name;
       a.click();
-    } catch (e) {
-      toast('파일을 불러오지 못했어요 · ' + friendly(e));
-    }
+    } catch (e) { toast('파일을 받지 못했어요 · ' + friendly(e)); }
     el.disabled = false;
-    el.innerHTML = '<i class="fa-solid fa-download mr-1.5"></i>저장';
+    el.innerHTML = html;
   },
-  filedel: async (el) => {
-    const f = files.find((x) => x.id === el.dataset.id);
-    if (!confirm(`'${f.caption || f.name}' 자료를 삭제할까요?${f.uid === me ? '' : `\n(관리자 권한 · 올린 사람: ${f.by})`}`)) return;
-    try { await deleteFile(f); closeModal(); toast('자료를 삭제했어요'); } catch (e) { toast('삭제하지 못했어요 · ' + friendly(e)); }
+  commentdel: async (el) => {
+    if (!confirm('이 댓글을 지울까요?')) return;
+    try {
+      await fb.f.deleteDoc(fb.f.doc(fb.db, 'posts', el.dataset.post, 'comments', el.dataset.id));
+      await fb.f.updateDoc(docRef('posts', el.dataset.post), { comments: fb.f.increment(-1) });
+    } catch (e) { toast('지우지 못했어요 · ' + friendly(e)); }
+  },
+  draftdel: (el) => {
+    draftFiles.splice(Number(el.dataset.i), 1);
+    const ul = $('[data-draftfiles]');
+    if (ul) ul.innerHTML = draftList();
   },
 
   tododay: (el) => { ui.todoDate = dkey(addDays(parseKey(ui.todoDate), Number(el.dataset.delta))); render(); },
@@ -3089,6 +3289,66 @@ const forms = {
   auth: (f) => onAuth(f),
   withdraw: (f) => withdraw(f),
   pwchange: (f) => changeTempPassword(f),
+  post: async (f) => {
+    const cat = f.elements.cat.value || 'free', title = f.elements.title.value.trim(), body = f.elements.body.value.trim();
+    if (!title) return;
+    const btn = f.querySelector('[data-submit]');
+    btn.disabled = true;
+    try {
+      if (ui.editPost) {
+        await fb.f.updateDoc(docRef('posts', ui.editPost), { cat, title, body, editedAt: Date.now() });
+        closeModal();
+        return toast('글을 고쳤어요');
+      }
+      const ref = fb.f.doc(fb.f.collection(fb.db, 'posts'));
+      const attached = [], failed = [];
+      for (const [i, file] of draftFiles.entries()) {
+        try {
+          let blob = file, type = file.type || 'application/octet-stream', name = file.name, thumb = '';
+          // 사진은 줄여서 올리고 목록용 작은 미리보기도 만든다 (브라우저가 못 읽는 사진 · GIF 는 원본 그대로)
+          if (type.startsWith('image/') && type !== 'image/gif') {
+            try {
+              blob = await toJpeg(await shrinkImage(file, 2400));
+              thumb = (await shrinkImage(file, 400)).toDataURL('image/jpeg', QUALITY);
+              type = 'image/jpeg';
+              name = name.replace(/\.[^.]+$/, '') + '.jpg';
+            } catch {
+              blob = file;
+            }
+          }
+          if (blob.size > MAX_FILE) { failed.push(`${file.name}(50MB 초과)`); continue; }
+          attached.push(await uploadFile(blob, { name, type, thumb, by: myProfile().nick, uid: me, at: Date.now(), post: ref.id }, (p) => {
+            btn.textContent = `올리는 중 ${i + 1}/${draftFiles.length} · ${Math.round(p * 100)}%`;
+          }));
+        } catch (e) {
+          failed.push(`${file.name}(${friendly(e)})`);
+        }
+      }
+      await fb.f.setDoc(ref, { uid: me, nick: myProfile().nick, cat, title, body, at: Date.now(), files: attached, likes: {}, comments: 0 });
+      draftFiles = [];
+      ui.boardCat = 'all';
+      closeModal();
+      toast(failed.length ? `글을 올렸어요 · 못 올린 파일: ${failed.join(', ')}` : '글을 올렸어요');
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = ui.editPost ? '저장' : '올리기';
+      toast('올리지 못했어요 · ' + friendly(e));
+    }
+  },
+  comment: async (f) => {
+    const id = f.dataset.id, text = f.elements.text.value.trim();
+    if (!text) return;
+    const btn = f.querySelector('[data-submit]');
+    btn.disabled = true;
+    try {
+      await fb.f.addDoc(fb.f.collection(fb.db, 'posts', id, 'comments'), { uid: me, nick: myProfile().nick, text, at: Date.now() });
+      await fb.f.updateDoc(docRef('posts', id), { comments: fb.f.increment(1) });
+      f.elements.text.value = '';
+    } catch (e) {
+      toast('댓글을 남기지 못했어요 · ' + friendly(e));
+    }
+    btn.disabled = false;
+  },
   pwrequest: async (f) => {
     const nick = f.elements.nick.value.trim(), real = f.elements.real.value.trim();
     if (!nick || !real) return;
@@ -3212,39 +3472,6 @@ const forms = {
       toast('게시하지 못했어요 · ' + friendly(e));
     }
   },
-  upload: async (f) => {
-    const caption = f.elements.caption.value.trim();
-    const btn = f.querySelector('[data-submit]');
-    btn.disabled = true;
-    let done = 0;
-    const failed = [];
-    for (const [i, file] of pending.entries()) {
-      try {
-        let blob = file, type = file.type || 'application/octet-stream', name = file.name, thumb = '';
-        // 사진은 줄여서 올리고 목록용 작은 미리보기도 만든다 (브라우저가 못 읽는 사진은 원본 그대로)
-        if (type.startsWith('image/') && type !== 'image/gif') {
-          try {
-            blob = await toJpeg(await shrinkImage(file, 2400));
-            thumb = (await shrinkImage(file, 400)).toDataURL('image/jpeg', QUALITY);
-            type = 'image/jpeg';
-            name = name.replace(/\.[^.]+$/, '') + '.jpg';
-          } catch {
-            blob = file;
-          }
-        }
-        if (blob.size > MAX_FILE) { failed.push(`${file.name}(10MB 초과)`); continue; }
-        await uploadFile(blob, { name, type, caption, thumb, by: myProfile().nick, uid: me, at: Date.now() }, (p) => {
-          btn.textContent = `올리는 중 ${i + 1}/${pending.length} · ${Math.round(p * 100)}%`;
-        });
-        done++;
-      } catch (e) {
-        failed.push(`${file.name}(${friendly(e)})`);
-      }
-    }
-    pending = [];
-    closeModal();
-    toast(failed.length ? `${done}개 게시 · 실패: ${failed.join(', ')}` : `자료 ${done}개를 게시했어요`);
-  },
 };
 
 document.addEventListener('click', (e) => {
@@ -3306,10 +3533,15 @@ document.addEventListener('change', async (e) => {
     ui.proofUploading = false;
     refreshView();
   }
-  if (t.dataset.input === 'files' && t.files?.length) {
-    pending = [...t.files];
+  if (t.dataset.input === 'postfiles' && t.files?.length) {
+    const picked = [...t.files];
     t.value = '';
-    uploadModal();
+    // 사진은 올릴 때 줄이니까 크기 검사는 사진이 아닌 파일만
+    const big = picked.filter((x) => !isImage(x) && x.size > MAX_FILE);
+    draftFiles = [...draftFiles, ...picked.filter((x) => !big.includes(x))].slice(0, MAX_ATTACH);
+    if (big.length) toast(`50MB가 넘어서 뺐어요: ${big.map((x) => x.name).join(', ')}`);
+    const ul = $('[data-draftfiles]');
+    if (ul) ul.innerHTML = draftList();
   }
 });
 
