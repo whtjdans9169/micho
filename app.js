@@ -2027,10 +2027,13 @@ function commentsHtml(p) {
   }).join('');
 }
 
-// 글쓰기 · 고치기 (고칠 때는 분류 · 제목 · 내용만)
+// 글쓰기 · 고치기. 고칠 때는 이미 붙은 파일(keepFiles)을 빼거나 새 파일(draftFiles)을 더할 수 있다
+let keepFiles = [];
+const attachRoom = () => MAX_ATTACH - keepFiles.length; // 새로 더 붙일 수 있는 개수
 function postWriteModal(p) {
   ui.editPost = p?.id || null;
-  if (!p) draftFiles = [];
+  draftFiles = [];
+  keepFiles = [...(p?.files || [])];
   const cat = p?.cat || (ui.boardCat !== 'all' ? ui.boardCat : 'tip');
   openModal(`
     <div class="flex items-center justify-between">
@@ -2046,26 +2049,30 @@ function postWriteModal(p) {
       </div>
       <input name="title" required maxlength="80" autocomplete="off" value="${esc(p?.title)}" placeholder="제목" class="${INPUT}">
       <textarea name="body" rows="7" maxlength="5000" placeholder="내용을 적어주세요 (공부 꿀팁, 궁금한 점, 이야기 등)" class="${INPUT} resize-none">${esc(p?.body)}</textarea>
-      ${p ? '<p class="text-xs text-gray-500">첨부한 사진 · 파일은 고칠 수 없어요. 바꾸려면 글을 지우고 새로 올려주세요.</p>' : `
       <label class="block cursor-pointer p-3 rounded-2xl border-2 border-dashed border-gray-300 text-center text-sm text-gray-600">
         <input type="file" multiple data-input="postfiles" class="hidden">
-        <i class="fa-solid fa-paperclip mr-1.5"></i>사진 · 파일 첨부 <span class="text-xs text-gray-500">(파일 하나당 10MB까지 · 최대 ${MAX_ATTACH}개 · 사진은 자동으로 최적화)</span>
+        <i class="fa-solid fa-paperclip mr-1.5"></i>사진 · 파일 ${p ? '더 붙이기' : '첨부'} <span class="text-xs text-gray-500">(파일 하나당 10MB까지 · 최대 ${MAX_ATTACH}개 · 사진은 자동으로 최적화)</span>
       </label>
-      <ul data-draftfiles class="space-y-1.5">${draftList()}</ul>`}
+      <ul data-draftfiles class="space-y-1.5">${draftList()}</ul>
       <div class="flex gap-2 pt-1">
         <button type="button" data-action="closemodal" class="flex-1 py-3 rounded-2xl bg-white/70 text-gray-600">취소</button>
         <button data-submit class="btn flex-1 py-3 rounded-2xl font-semibold disabled:opacity-60">${p ? '저장' : '올리기'}</button>
       </div>
     </form>`);
 }
+// 첨부 목록: 이미 붙은 파일(사진은 작은 미리보기) + 새로 고른 파일('새 파일' 표시). X 로 빼기
 function draftList() {
-  return draftFiles.map((f, i) => `
+  const row = (f, icon, action, key, tag) => `
     <li class="flex items-center gap-2.5 p-2 rounded-xl bg-white/60 text-sm">
-      <i class="fa-solid ${fileIcon(f)} text-brand w-5 text-center"></i>
+      ${icon}
       <span class="flex-1 min-w-0 truncate">${esc(f.name)}</span>
+      ${tag}
       <span class="text-xs text-gray-500 whitespace-nowrap">${fmtSize(f.size)}</span>
-      <button type="button" data-action="draftdel" data-i="${i}" class="w-6 text-gray-400" aria-label="빼기"><i class="fa-solid fa-xmark"></i></button>
-    </li>`).join('');
+      <button type="button" data-action="${action}" ${key} class="w-6 text-gray-400" aria-label="빼기"><i class="fa-solid fa-xmark"></i></button>
+    </li>`;
+  const iconOf = (f) => (f.thumb ? `<img src="${f.thumb}" alt="" class="w-8 h-8 rounded-lg object-cover">` : `<i class="fa-solid ${fileIcon(f)} text-brand w-8 text-center"></i>`);
+  return keepFiles.map((f) => row(f, iconOf(f), 'keepdel', `data-fid="${f.id}"`, '')).join('')
+    + draftFiles.map((f, i) => row(f, iconOf(f), 'draftdel', `data-i="${i}"`, ui.editPost ? '<span class="px-1.5 rounded-md bg-brand text-white text-[10px] font-bold">새 파일</span>' : '')).join('');
 }
 
 async function deletePost(p) {
@@ -3179,6 +3186,12 @@ const actions = {
     const ul = $('[data-draftfiles]');
     if (ul) ul.innerHTML = draftList();
   },
+  // 고치기에서 이미 붙은 파일 빼기 (저장해야 실제로 지워진다)
+  keepdel: (el) => {
+    keepFiles = keepFiles.filter((x) => x.id !== el.dataset.fid);
+    const ul = $('[data-draftfiles]');
+    if (ul) ul.innerHTML = draftList();
+  },
 
   tododay: (el) => { ui.todoDate = dkey(addDays(parseKey(ui.todoDate), Number(el.dataset.delta))); render(); },
   todotoday: () => { ui.todoDate = today; render(); },
@@ -3298,12 +3311,8 @@ const forms = {
     const btn = f.querySelector('[data-submit]');
     btn.disabled = true;
     try {
-      if (ui.editPost) {
-        await fb.f.updateDoc(docRef('posts', ui.editPost), { cat, title, body, editedAt: Date.now() });
-        closeModal();
-        return toast('글을 고쳤어요');
-      }
-      const ref = fb.f.doc(fb.f.collection(fb.db, 'posts'));
+      const editing = ui.editPost && findPost(ui.editPost);
+      const ref = editing ? docRef('posts', editing.id) : fb.f.doc(fb.f.collection(fb.db, 'posts'));
       const attached = [], failed = [];
       for (const [i, file] of draftFiles.entries()) {
         try {
@@ -3327,11 +3336,21 @@ const forms = {
           failed.push(`${file.name}(${friendly(e)})`);
         }
       }
+      const fail = failed.length ? ` · 못 올린 파일: ${failed.join(', ')}` : '';
+      if (editing) {
+        // 고치기: 남긴 파일 + 새 파일로 바꾸고, 뺀 파일은 내용까지 지운다
+        await fb.f.updateDoc(ref, { cat, title, body, files: [...keepFiles, ...attached], editedAt: Date.now() });
+        const kept = new Set(keepFiles.map((x) => x.id));
+        await Promise.all((editing.files || []).filter((x) => !kept.has(x.id)).map((x) => deleteFile(x).catch(() => {})));
+        draftFiles = [];
+        closeModal();
+        return toast('글을 고쳤어요' + fail);
+      }
       await fb.f.setDoc(ref, { uid: me, nick: myProfile().nick, cat, title, body, at: Date.now(), files: attached, likes: {}, comments: 0 });
       draftFiles = [];
       ui.boardCat = 'all';
       closeModal();
-      toast(failed.length ? `글을 올렸어요 · 못 올린 파일: ${failed.join(', ')}` : '글을 올렸어요');
+      toast('글을 올렸어요' + fail);
     } catch (e) {
       btn.disabled = false;
       btn.textContent = ui.editPost ? '저장' : '올리기';
@@ -3541,8 +3560,10 @@ document.addEventListener('change', async (e) => {
     t.value = '';
     // 사진은 올릴 때 줄이니까 크기 검사는 사진이 아닌 파일만
     const big = picked.filter((x) => !isImage(x) && x.size > MAX_FILE);
-    draftFiles = [...draftFiles, ...picked.filter((x) => !big.includes(x))].slice(0, MAX_ATTACH);
+    const all = [...draftFiles, ...picked.filter((x) => !big.includes(x))];
+    draftFiles = all.slice(0, Math.max(0, attachRoom()));
     if (big.length) toast(`10MB가 넘어서 뺐어요: ${big.map((x) => x.name).join(', ')}`);
+    else if (all.length > draftFiles.length) toast(`파일은 글 하나에 ${MAX_ATTACH}개까지예요`);
     const ul = $('[data-draftfiles]');
     if (ul) ul.innerHTML = draftList();
   }
